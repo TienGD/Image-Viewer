@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Image Viewer</title>
+		<link rel="stylesheet" href="../static/css/style.css" />
+	</head>
+	<body>
+		<div class="app-shell">
+			<header class="app-header">
+				<div class="brand">Image Viewer IUH</div>
+				<label class="upload-button" for="mediaInput"
+					>Upload file
+					<input id="mediaInput" type="file" accept="image/*,video/*" />
+				</label>
+			</header>
+
+			<main class="viewer-panel">
+				<div class="comparison-grid">
+					<section class="preview-card">
+						<div class="card-header">
+							<span>Before</span>
+						</div>
+						<div id="beforePreview" class="media-stage empty">Upload an image or video</div>
+					</section>
+
+					<section class="preview-card">
+						<div class="card-header">
+							<span>After</span>
+						</div>
+						<div id="afterPreview" class="media-stage empty">Preview after changes</div>
+					</section>
+				</div>
+
+				<div class="tool-panel">
+					<div class="control-card">
+						<div class="control-header">
+							<span>Zoom</span>
+							<span id="zoomValue" class="slider-value">100%</span>
+						</div>
+						<input id="zoomSlider" type="range" min="50" max="200" value="100" step="5" />
+					</div>
+
+					<div class="control-card">
+						<div class="control-header">
+							<span>Rotate</span>
+							<span id="rotateValue" class="slider-value">0°</span>
+						</div>
+						<input id="rotateSlider" type="range" min="0" max="360" value="0" step="5" />
+					</div>
+
+					<div class="control-card">
+						<div class="control-header">
+							<span>Crop</span>
+							<span id="cropValue" class="slider-value">0%</span>
+						</div>
+						<input id="cropSlider" type="range" min="0" max="30" value="0" step="1" />
+					</div>
+				</div>
+			</main>
+		</div>
+
+		<script src="../static/js/script.js"></script>
+	</body>
+</html>
