@@ -12,43 +12,59 @@ const rotateValue = document.getElementById('rotateValue');
 const cropSlider = document.getElementById('cropSlider');
 const cropValue = document.getElementById('cropValue');
 
-let currentFile = null; // Biến lưu trữ file ảnh đang tải lên
+let currentFile = null;
 
-// --- 2. XỬ LÝ SỰ KIỆN CHỌN FILE (SHOW ẢNH BEFORE) ---
+// --- 2. XỬ LÝ SỰ KIỆN CHỌN FILE ---
 mediaInput.addEventListener('change', function (event) {
 	const file = event.target.files[0];
 	if (file) {
 		currentFile = file;
-
-		// Đọc file và hiển thị lên khung Before
 		const reader = new FileReader();
 		reader.onload = function (e) {
 			beforePreview.innerHTML = `<img src="${e.target.result}" style="max-width: 100%; max-height: 100%; border-radius: 8px;">`;
-			// Khi vừa tải ảnh lên, tự động gửi yêu cầu xử lý gốc sang khung After
+
+			// Xóa rỗng thẻ After để tạo lại từ đầu cho ảnh mới
+			afterPreview.innerHTML = '';
 			sendToBackend();
 		};
 		reader.readAsDataURL(file);
 	}
 });
 
-// --- 3. CẬP NHẬT GIAO DIỆN THANH TRƯỢT (SLIDERS) ---
-zoomSlider.addEventListener('input', (e) => (zoomValue.textContent = `${e.target.value}%`));
-rotateSlider.addEventListener('input', (e) => (rotateValue.textContent = `${e.target.value}°`));
-cropSlider.addEventListener('input', (e) => (cropValue.textContent = `${e.target.value}%`));
+// --- 3 & 4. CẬP NHẬT GIAO DIỆN VÀ GỌI API BẰNG DEBOUNCE ---
+// Biến lưu trữ timeout để trì hoãn việc gọi API
+let timeoutId = null;
 
-// --- 4. GỬI YÊU CẦU XỬ LÝ LÊN BACKEND (KHI KÉO SLIDER XONG) ---
-// Dùng sự kiện 'change' thay vì 'input' để tránh gửi dữ liệu liên tục khi đang kéo dở
-zoomSlider.addEventListener('change', sendToBackend);
-rotateSlider.addEventListener('change', sendToBackend);
-cropSlider.addEventListener('change', sendToBackend);
+// Hàm xử lý chung khi kéo bất kỳ thanh trượt nào
+function handleSliderInput(e, textElement, suffix) {
+	// 1. Cập nhật con số hiển thị ngay lập tức
+	textElement.textContent = `${e.target.value}${suffix}`;
 
+	// 2. Hủy yêu cầu cũ nếu người dùng vẫn đang kéo
+	clearTimeout(timeoutId);
+
+	// 3. Đặt lịch gọi API mới sau 150ms (ngừng kéo 0.15s thì mới gọi API)
+	timeoutId = setTimeout(() => {
+		sendToBackend();
+	}, 150);
+}
+
+zoomSlider.addEventListener('input', (e) => handleSliderInput(e, zoomValue, '%'));
+rotateSlider.addEventListener('input', (e) => handleSliderInput(e, rotateValue, '°'));
+cropSlider.addEventListener('input', (e) => handleSliderInput(e, cropValue, '%'));
+
+// --- 5. GỬI YÊU CẦU XỬ LÝ LÊN BACKEND ---
 async function sendToBackend() {
 	if (!currentFile) return;
 
-	// Hiển thị trạng thái đang load (Tùy chọn)
-	afterPreview.innerHTML = 'Đang xử lý...';
+	// Tìm thẻ <img> trong khung After
+	let imgEl = afterPreview.querySelector('img');
 
-	// Đóng gói dữ liệu gửi đi (File ảnh + Các thông số)
+	if (imgEl) {
+		// Nếu đã có ảnh, CHỈ LÀM MỜ ẢNH CŨ thay vì xóa nó đi
+		imgEl.style.opacity = '0.4';
+	}
+
 	const formData = new FormData();
 	formData.append('file', currentFile);
 	formData.append('zoom', zoomSlider.value);
@@ -56,22 +72,27 @@ async function sendToBackend() {
 	formData.append('crop', cropSlider.value);
 
 	try {
-		// Gửi API đến Backend FastAPI
 		const response = await fetch('/api/process-image', {
 			method: 'POST',
 			body: formData,
 		});
 
 		if (response.ok) {
-			// Nhận ảnh đã xử lý dưới dạng Blob và hiển thị lên khung After
 			const blob = await response.blob();
 			const imageUrl = URL.createObjectURL(blob);
-			afterPreview.innerHTML = `<img src="${imageUrl}" style="max-width: 100%; max-height: 100%; border-radius: 8px;">`;
+
+			if (imgEl) {
+				// CẬP NHẬT TRỰC TIẾP link ảnh mới vào thẻ cũ
+				imgEl.src = imageUrl;
+				imgEl.style.opacity = '1'; // Sáng lại mượt mà
+			} else {
+				// Nếu là lần đầu tiên chưa có thẻ <img>, tạo mới với hiệu ứng transition opacity
+				afterPreview.innerHTML = `<img src="${imageUrl}" style="max-width: 100%; max-height: 100%; border-radius: 8px; transition: opacity 0.3s ease;">`;
+			}
 		} else {
-			afterPreview.innerHTML = 'Lỗi xử lý từ Backend!';
+			console.error('Lỗi xử lý từ Backend!');
 		}
 	} catch (error) {
 		console.error('Lỗi kết nối:', error);
-		afterPreview.innerHTML = 'Lỗi kết nối server!';
 	}
 }
