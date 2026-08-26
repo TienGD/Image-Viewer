@@ -60,8 +60,26 @@ async def process_image(
     # PHÂN VÙNG 4: XỬ LÝ ZOOM (Thu phóng ảnh)
     # ==========================================
     # zoom_value tính theo % (ví dụ 150 là x1.5 kích thước)
-    
-    # [CODE THU PHÓNG CỦA BẠN Ở ĐÂY]
+    if zoom != 100 and zoom > 0:
+            h, w = img.shape[:2]
+            scale = zoom / 100.0
+            
+            # 1. Phóng to / Thu nhỏ ảnh
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+            
+            if scale > 1.0:
+                # 2a. Nếu phóng to: Cắt lấy phần trung tâm bằng đúng kích thước gốc
+                start_y = (new_h - h) // 2
+                start_x = (new_w - w) // 2
+                img = resized[start_y : start_y + h, start_x : start_x + w]
+            else:
+                # 2b. Nếu thu nhỏ: Đặt ảnh nhỏ vào giữa một khung nền đen bằng kích thước gốc
+                img = np.zeros((h, w, 3), dtype=np.uint8)
+                start_y = (h - new_h) // 2
+                start_x = (w - new_w) // 2
+                img[start_y : start_y + new_h, start_x : start_x + new_w] = resized
     
     
     # ==========================================
