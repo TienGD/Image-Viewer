@@ -31,22 +31,22 @@ mediaInput.addEventListener('change', function (event) {
 	}
 });
 
-// --- 3 & 4. CẬP NHẬT GIAO DIỆN VÀ GỌI API BẰNG DEBOUNCE ---
-// Biến lưu trữ timeout để trì hoãn việc gọi API
+// --- 3 & 4. CẬP NHẬT GIAO DIỆN VÀ GỌI API BẰNG DEBOUNCE & ABORTCONTROLLER ---
 let timeoutId = null;
+let currentAbortController = null;
 
 // Hàm xử lý chung khi kéo bất kỳ thanh trượt nào
 function handleSliderInput(e, textElement, suffix) {
 	// 1. Cập nhật con số hiển thị ngay lập tức
 	textElement.textContent = `${e.target.value}${suffix}`;
 
-	// 2. Hủy yêu cầu cũ nếu người dùng vẫn đang kéo
+	// 2. Hủy lịch gọi cũ nếu người dùng vẫn đang kéo
 	clearTimeout(timeoutId);
 
-	// 3. Đặt lịch gọi API mới sau 150ms (ngừng kéo 0.15s thì mới gọi API)
+	// 3. Đặt lịch gọi API mới sau 40ms (phản hồi tức thì, mượt mà như 25-30 FPS)
 	timeoutId = setTimeout(() => {
 		sendToBackend();
-	}, 150);
+	}, 40);
 }
 
 zoomSlider.addEventListener('input', (e) => handleSliderInput(e, zoomValue, '%'));
@@ -57,13 +57,11 @@ cropSlider.addEventListener('input', (e) => handleSliderInput(e, cropValue, '%')
 async function sendToBackend() {
 	if (!currentFile) return;
 
-	// Tìm thẻ <img> trong khung After
-	let imgEl = afterPreview.querySelector('img');
-
-	if (imgEl) {
-		// Nếu đã có ảnh, CHỈ LÀM MỜ ẢNH CŨ thay vì xóa nó đi
-		imgEl.style.opacity = '0.4';
+	// Hủy yêu cầu HTTP đang chạy trước đó nếu có (tránh ứ đọng request)
+	if (currentAbortController) {
+		currentAbortController.abort();
 	}
+	currentAbortController = new AbortController();
 
 	const formData = new FormData();
 	formData.append('file', currentFile);
@@ -75,24 +73,30 @@ async function sendToBackend() {
 		const response = await fetch('/api/process-image', {
 			method: 'POST',
 			body: formData,
+			signal: currentAbortController.signal,
 		});
 
 		if (response.ok) {
 			const blob = await response.blob();
 			const imageUrl = URL.createObjectURL(blob);
+			let imgEl = afterPreview.querySelector('img');
 
 			if (imgEl) {
-				// CẬP NHẬT TRỰC TIẾP link ảnh mới vào thẻ cũ
+				// CẬP NHẬT TRỰC TIẾP link ảnh mới vào thẻ cũ (không chớp nháy)
 				imgEl.src = imageUrl;
-				imgEl.style.opacity = '1'; // Sáng lại mượt mà
+				imgEl.style.opacity = '1';
 			} else {
-				// Nếu là lần đầu tiên chưa có thẻ <img>, tạo mới với hiệu ứng transition opacity
-				afterPreview.innerHTML = `<img src="${imageUrl}" style="max-width: 100%; max-height: 100%; border-radius: 8px; transition: opacity 0.3s ease;">`;
+				// Nếu là lần đầu tiên chưa có thẻ <img>, tạo mới
+				afterPreview.innerHTML = `<img src="${imageUrl}" style="max-width: 100%; max-height: 100%; border-radius: 8px;">`;
 			}
 		} else {
 			console.error('Lỗi xử lý từ Backend!');
 		}
 	} catch (error) {
+		if (error.name === 'AbortError') {
+			// Request cũ bị hủy vì có thao tác kéo mới hơn - hoàn toàn bình thường
+			return;
+		}
 		console.error('Lỗi kết nối:', error);
 	}
 }
