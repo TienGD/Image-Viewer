@@ -89,7 +89,7 @@ async def process_image(
         h, w = img.shape[:2]
         
         # 1. Giới hạn tỷ lệ cắt an toàn trong khoảng [0%, 30%] và đổi sang hệ số thập phân
-        crop_percent = min(max(crop, 0), 30) / 100.0
+        crop_percent = min(max(int(crop), 0), 30) / 100.0
         
         # 2. Tính số pixel cần cắt bỏ đều ở 4 phía (trên/dưới/trái/phải)
         pad_y = int(h * crop_percent)
