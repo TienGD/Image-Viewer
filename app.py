@@ -85,9 +85,23 @@ async def process_image(
     # PHÂN VÙNG 2: XỬ LÝ CROP (Cắt ảnh)
     # ==========================================
     # crop_value là tỷ lệ % cắt viền (từ 0% đến 30%)
-    
-    # [CODE CROP CỦA BẠN Ở ĐÂY]
-    
+    if crop > 0:
+        h, w = img.shape[:2]
+        
+        # 1. Giới hạn tỷ lệ cắt an toàn trong khoảng [0%, 30%] và đổi sang hệ số thập phân
+        crop_percent = min(max(int(crop), 0), 30) / 100.0
+        
+        # 2. Tính số pixel cần cắt bỏ đều ở 4 phía (trên/dưới/trái/phải)
+        pad_y = int(h * crop_percent)
+        pad_x = int(w * crop_percent)
+        
+        # 3. Xác định tọa độ biên cắt trung tâm
+        y1, y2 = pad_y, h - pad_y
+        x1, x2 = pad_x, w - pad_x
+        
+        # 4. Cắt lấy vùng ảnh trung tâm bằng kỹ thuật NumPy Slicing
+        if y2 > y1 and x2 > x1:
+            img = img[y1:y2, x1:x2]
     
     # ==========================================
     # PHÂN VÙNG 3: XỬ LÝ ROTATE (Xoay ảnh)
