@@ -47,6 +47,7 @@ async def process_image(
     zoom: int = Form(...),
     rotate: int = Form(...),
     crop: int = Form(...)
+    
 ):
     # ==========================================
     # PHÂN VÙNG 1: ĐỌC DỮ LIỆU ẢNH ĐẦU VÀO & CACHE
