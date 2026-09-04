@@ -10,10 +10,22 @@
 		<div class="app-shell">
 			<header class="app-header">
 				<div class="brand">Image Viewer IUH</div>
-				<label class="upload-button" for="mediaInput"
-					>Upload file
-					<input id="mediaInput" type="file" accept="image/*,video/*" />
-				</label>
+    <div class="header-actions" style="display: flex; gap: 12px; align-items: center;">
+        <label class="upload-button" for="mediaInput">
+            Upload file
+            <input id="mediaInput" type="file" accept="image/*,video/*" />
+        </label>
+        
+        <!-- BỔ SUNG KHU VỰC EXPORT FILE -->
+        <div class="export-controls" style="display: flex; gap: 8px; height: 52px;">
+            <select id="exportFormat" class="export-select">
+                <option value="jpg">JPG</option>
+                <option value="png">PNG</option>
+            </select>
+            <button id="exportButton" class="upload-button export-btn">Export</button>
+        </div>
+    </div>
+				
 			</header>
 
 			<main class="viewer-panel">

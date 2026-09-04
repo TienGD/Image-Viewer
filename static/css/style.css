@@ -216,3 +216,49 @@ input[type='range'] {
 		min-height: 300px;
 	}
 }
+
+.export-select {
+    padding: 0 16px;
+    border-radius: 16px;
+    border: 1px solid rgba(130, 196, 255, 0.4);
+    background: #fff;
+    color: var(--text);
+    font-weight: 600;
+    font-family: inherit;
+    font-size: 1rem;
+    outline: none;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(88, 160, 224, 0.08);
+}
+
+.export-btn {
+    background: linear-gradient(135deg, #34d399 0%, #059669 100%);
+    box-shadow: 0 12px 22px rgba(16, 185, 129, 0.26);
+    border: none;
+    min-width: 120px;
+    font-size: 1rem;
+}
+
+.export-btn:hover {
+    box-shadow: 0 18px 28px rgba(16, 185, 129, 0.32);
+}
+
+.export-btn:disabled {
+    background: #a1a1aa;
+    box-shadow: none;
+    cursor: not-allowed;
+    transform: none;
+}
+
+@media (max-width: 760px) {
+    .header-actions {
+        flex-direction: column;
+        width: 100%;
+    }
+    .export-controls {
+        width: 100%;
+    }
+    .export-select, .export-btn {
+        flex: 1;
+    }
+}
