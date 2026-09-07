@@ -4,7 +4,7 @@
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<title>Image Viewer</title>
-		<link rel="stylesheet" href="../static/css/style.css" />
+		<link rel="stylesheet" href="/static/css/style.css" />
 	</head>
 	<body>
 		<div class="app-shell">
@@ -13,10 +13,16 @@
     <div class="header-actions" style="display: flex; gap: 12px; align-items: center;">
         <label class="upload-button" for="mediaInput">
             Upload file
-            <input id="mediaInput" type="file" accept="image/*,video/*" />
+            <input id="mediaInput" type="file" accept="image/*" />
         </label>
         
-        <!-- BỔ SUNG KHU VỰC EXPORT FILE -->
+        <!-- NÚT SAVE (LƯU PHIÊN VÀO SERVER LOCAL) -->
+        <button id="saveButton" class="upload-button save-btn" title="Lưu phiên làm việc vào máy chủ">Save</button>
+
+        <!-- NÚT HISTORY (XEM CÁC PHIÊN ĐÃ LƯU) -->
+        <button id="historyButton" class="upload-button history-btn" title="Xem danh sách phiên đã lưu">History</button>
+
+        <!-- KHU VỰC EXPORT (CHỌN ĐỊNH DẠNG TẢI VỀ) -->
         <div class="export-controls" style="display: flex; gap: 8px; height: 52px;">
             <select id="exportFormat" class="export-select">
                 <option value="jpg">JPG</option>
@@ -73,6 +79,27 @@
 			</main>
 		</div>
 
-		<script src="../static/js/script.js"></script>
+		<!-- MODAL DANH SÁCH PHIÊN LÀM VIỆC ĐÃ LƯU -->
+		<div id="sessionsModal" class="modal-backdrop">
+			<div class="modal-dialog">
+				<div class="modal-header">
+					<div class="modal-title">
+						<span>📁 Saved Sessions</span>
+						<span id="sessionCountBadge" class="count-badge">0</span>
+					</div>
+					<button id="closeModalBtn" class="modal-close-btn" title="Đóng">&times;</button>
+				</div>
+				<div class="modal-body">
+					<div id="sessionsList" class="sessions-list">
+						<!-- Danh sách các phiên làm việc được render động -->
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- TOAST THÔNG BÁO NHANH -->
+		<div id="toastNotification" class="toast-notification"></div>
+
+		<script src="/static/js/script.js"></script>
 	</body>
 </html>
