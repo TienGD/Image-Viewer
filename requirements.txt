@@ -104,3 +104,4 @@ websocket-client==1.9.0
 Werkzeug==3.1.8
 widgetsnbextension==4.0.15
 uvicorn==0.24.0
+fastapi==0.111.1
