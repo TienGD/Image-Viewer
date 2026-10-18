@@ -395,3 +395,246 @@ if (exportButton) {
 
 
 
+
+
+// ===========================================================================
+// --- PHÂN VÙNG 10: ĐẾM HẠT & PHÂN ĐOẠN WATERSHED (PARTICLE COUNTING) ---
+// ===========================================================================
+//
+// Nguyên tắc: JS chỉ thu thập tham số từ UI và gọi API Python.
+// Toàn bộ logic xử lý ảnh, Watershed, Distance Transform, đo lường
+// hình thái → thực hiện hoàn toàn ở backend (app.py, Phân vùng 5).
+// ===========================================================================
+
+// --- 10.1. KẾT NỐI CÁC PHẦN TỬ GIAO DIỆN PARTICLE COUNTING ---
+const btnRunWatershed   = document.getElementById('btnRunWatershed');
+const btnResetWatershed = document.getElementById('btnResetWatershed');
+const btnExportDataCsv  = document.getElementById('btnExportDataCsv');
+
+const wsMethodSelect    = document.getElementById('wsMethodSelect');
+const wsThresholdSlider = document.getElementById('wsThresholdSlider');
+const wsThresholdVal    = document.getElementById('wsThresholdVal');
+const wsDistanceSlider  = document.getElementById('wsDistanceSlider');
+const wsDistanceVal     = document.getElementById('wsDistanceVal');
+const wsMinAreaSlider   = document.getElementById('wsMinAreaSlider');
+const wsMinAreaVal      = document.getElementById('wsMinAreaVal');
+
+const chkShowBoundary   = document.getElementById('chkShowBoundary');
+const chkShowCentroid   = document.getElementById('chkShowCentroid');
+const chkShowId         = document.getElementById('chkShowId');
+const chkColorMap       = document.getElementById('chkColorMap');
+
+const metricTotalCount  = document.getElementById('metricTotalCount');
+const metricAvgArea     = document.getElementById('metricAvgArea');
+const metricCoverage    = document.getElementById('metricCoverage');
+const metricCircularity = document.getElementById('metricCircularity');
+
+const particleTableBody = document.getElementById('particleTableBody');
+const particleDataCount = document.getElementById('particleDataCount');
+
+let lastParticleFile   = null;
+let lastParticleParams = null;
+let particleAbortCtrl  = null;
+
+// --- 10.2. ĐẶT LẠI GIÁ TRỊ MẶC ĐỊNH (RESET WATERSHED) ---
+function resetWatershedParams() {
+	if (wsMethodSelect)    wsMethodSelect.value    = 'otsu';
+	if (wsThresholdSlider) { wsThresholdSlider.value = 128;  document.getElementById('wsThresholdVal').textContent = '128'; }
+	if (wsDistanceSlider)  { wsDistanceSlider.value  = 0.45; document.getElementById('wsDistanceVal').textContent  = '0.45'; }
+	if (wsMinAreaSlider)   { wsMinAreaSlider.value   = 20;   document.getElementById('wsMinAreaVal').textContent   = '20 px\u00B2'; }
+	if (chkShowBoundary)   chkShowBoundary.checked  = true;
+	if (chkShowCentroid)   chkShowCentroid.checked  = true;
+	if (chkShowId)         chkShowId.checked        = true;
+	if (chkColorMap)       chkColorMap.checked      = false;
+	showToast('\uD83D\uDD04 Đã đặt lại tham số Watershed về mặc định.');
+}
+
+// --- 10.3. CẬP NHẬT TRẠNG THÁI NÚT KHI ĐANG PHÂN TÍCH ---
+function setWatershedRunning(isRunning) {
+	if (!btnRunWatershed) return;
+	if (isRunning) {
+		btnRunWatershed.disabled = true;
+		btnRunWatershed.innerHTML =
+			'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="animation:wspin 1s linear infinite"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4" stroke-dashoffset="10"/></svg>' +
+			'<span>Đang phân tích Watershed...</span>';
+	} else {
+		btnRunWatershed.disabled = false;
+		btnRunWatershed.innerHTML =
+			'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>' +
+			'<span>Thực hiện đếm hạt (Watershed)</span>';
+	}
+}
+
+// --- 10.4. HIỂN THỊ ẢNH KẾT QUẢ WATERSHED VÀO PANEL "AFTER" ---
+function renderWatershedImages(resultB64) {
+	if (!afterPreview || !resultB64) return;
+	var resultSrc = 'data:image/jpeg;base64,' + resultB64;
+	var imgEl = afterPreview.querySelector('img');
+	if (imgEl) {
+		imgEl.src = resultSrc;
+	} else {
+		afterPreview.classList.remove('empty');
+		afterPreview.innerHTML = '<img src="' + resultSrc + '" style="max-width:100%;max-height:100%;border-radius:8px;">';
+	}
+}
+
+// --- 10.5. HIỂN THỊ CÁC CHỈ SỐ TỔNG HỢP VÀO METRIC CARDS ---
+function renderMetricCards(data) {
+	if (metricTotalCount)  metricTotalCount.textContent  = data.total_count;
+	if (metricAvgArea)     metricAvgArea.textContent     = data.avg_area.toLocaleString('vi-VN') + ' px\u00B2';
+	if (metricCoverage)    metricCoverage.textContent    = data.coverage_pct + '%';
+	if (metricCircularity) metricCircularity.textContent = data.avg_circularity.toFixed(3);
+}
+
+// --- 10.6. RENDER BẢNG DỮ LIỆU TỪNG HẠT (NHẬN DỮ LIỆU TỪ PYTHON) ---
+function renderParticleTable(particles) {
+	if (!particleTableBody) return;
+	if (!particles || particles.length === 0) {
+		particleTableBody.innerHTML =
+			'<tr class="table-placeholder-row"><td colspan="7">' +
+			'<div class="table-empty-box">' +
+			'<span class="empty-table-icon">\u26A0\uFE0F</span>' +
+			'<div class="empty-table-text">Không phát hiện được hạt nào</div>' +
+			'<div class="empty-table-sub">Hãy thử giảm <strong>Min Area</strong>, thay đổi <strong>Phương pháp phân ngưỡng</strong> hoặc giảm <strong>Distance Factor</strong>.</div>' +
+			'</div></td></tr>';
+		if (particleDataCount) particleDataCount.textContent = '0 kết quả';
+		return;
+	}
+	particleTableBody.innerHTML = particles.map(function(p) {
+		return '<tr>' +
+			'<td><strong>#' + p.id + '</strong></td>' +
+			'<td>' + p.cx + '</td>' +
+			'<td>' + p.cy + '</td>' +
+			'<td>' + p.area_px.toLocaleString('vi-VN') + '</td>' +
+			'<td>' + p.perimeter_px + '</td>' +
+			'<td>' + p.equiv_diameter_px + '</td>' +
+			'<td>' + p.circularity.toFixed(3) + '</td>' +
+			'</tr>';
+	}).join('');
+	if (particleDataCount) particleDataCount.textContent = particles.length + ' hạt / tế bào';
+}
+
+// --- 10.7. HÀM CHÍNH: GỌI API /api/particle-count (MỌI XỬ LÝ Ở PYTHON) ---
+async function runWatershed() {
+	if (!currentFile) {
+		showToast('\u26A0\uFE0F Vui lòng tải ảnh lên trước khi thực hiện đếm hạt!');
+		return;
+	}
+	if (particleAbortCtrl) particleAbortCtrl.abort();
+	particleAbortCtrl = new AbortController();
+	setWatershedRunning(true);
+
+	var formData = new FormData();
+	formData.append('file',            currentFile);
+	formData.append('method',          wsMethodSelect    ? wsMethodSelect.value    : 'otsu');
+	formData.append('threshold',       wsThresholdSlider ? wsThresholdSlider.value : '128');
+	formData.append('distance_factor', wsDistanceSlider  ? wsDistanceSlider.value  : '0.45');
+	formData.append('min_area',        wsMinAreaSlider   ? wsMinAreaSlider.value   : '20');
+	formData.append('show_boundary',   (chkShowBoundary && chkShowBoundary.checked)  ? 'true' : 'false');
+	formData.append('show_centroid',   (chkShowCentroid && chkShowCentroid.checked)  ? 'true' : 'false');
+	formData.append('show_id',         (chkShowId       && chkShowId.checked)        ? 'true' : 'false');
+	formData.append('color_map',       (chkColorMap     && chkColorMap.checked)      ? 'true' : 'false');
+
+	lastParticleFile   = currentFile;
+	lastParticleParams = {
+		method         : wsMethodSelect    ? wsMethodSelect.value    : 'otsu',
+		threshold      : wsThresholdSlider ? wsThresholdSlider.value : '128',
+		distance_factor: wsDistanceSlider  ? wsDistanceSlider.value  : '0.45',
+		min_area       : wsMinAreaSlider   ? wsMinAreaSlider.value   : '20',
+	};
+
+	try {
+		var response = await fetch('/api/particle-count', {
+			method: 'POST',
+			body  : formData,
+			signal: particleAbortCtrl.signal,
+		});
+		if (!response.ok) {
+			var errMsg = 'L\u1ED7i server (' + response.status + ')';
+			try { var errJson = await response.json(); errMsg = errJson.detail || errMsg; } catch (_) {}
+			throw new Error(errMsg);
+		}
+		var data = await response.json();
+		if (data.status !== 'success') throw new Error('Phân tích thất bại. Vui lòng thử lại!');
+
+		renderWatershedImages(data.result_image_b64);
+		renderMetricCards(data);
+		renderParticleTable(data.particles);
+		showToast('\u2713 Phát hiện ' + data.total_count + ' hạt/tế bào | Coverage: ' + data.coverage_pct + '%');
+	} catch (error) {
+		if (error.name === 'AbortError') return;
+		console.error('Lỗi khi phân tích Watershed:', error);
+		showToast('\u274C Lỗi: ' + (error.message || 'Không thể kết nối backend!'));
+	} finally {
+		setWatershedRunning(false);
+	}
+}
+
+// --- 10.8. XUẤT CSV — GỌI API /api/particle-export-csv (PYTHON XỬ LÝ VÀ STREAM CSV) ---
+async function exportParticleCSV() {
+	if (!lastParticleFile) {
+		showToast('\u26A0\uFE0F Chưa có kết quả đếm hạt. Hãy chạy phân tích trước!');
+		return;
+	}
+	var btn = btnExportDataCsv;
+	var originalHtml = btn ? btn.innerHTML : '';
+	if (btn) { btn.disabled = true; btn.innerHTML = '<span>Đang xuất...</span>'; }
+
+	var formData = new FormData();
+	formData.append('file',            lastParticleFile);
+	formData.append('method',          lastParticleParams.method);
+	formData.append('threshold',       lastParticleParams.threshold);
+	formData.append('distance_factor', lastParticleParams.distance_factor);
+	formData.append('min_area',        lastParticleParams.min_area);
+
+	try {
+		var response = await fetch('/api/particle-export-csv', { method: 'POST', body: formData });
+		if (!response.ok) throw new Error('L\u1ED7i server (' + response.status + ')');
+		var blob        = await response.blob();
+		var downloadUrl = window.URL.createObjectURL(blob);
+		var a = document.createElement('a');
+		a.href = downloadUrl;
+		a.download = 'particle_measurements.csv';
+		document.body.appendChild(a);
+		a.click();
+		document.body.removeChild(a);
+		window.URL.revokeObjectURL(downloadUrl);
+		showToast('\u2713 Đã xuất file CSV thành công!');
+	} catch (error) {
+		console.error('Lỗi khi xuất CSV:', error);
+		showToast('\u274C Không thể xuất CSV: ' + error.message);
+	} finally {
+		if (btn) { btn.disabled = false; btn.innerHTML = originalHtml; }
+	}
+}
+
+// --- 10.9. GẮN SỰ KIỆN ---
+if (btnRunWatershed)   btnRunWatershed.addEventListener('click',   runWatershed);
+if (btnResetWatershed) btnResetWatershed.addEventListener('click', resetWatershedParams);
+if (btnExportDataCsv)  btnExportDataCsv.addEventListener('click',  exportParticleCSV);
+
+// Cập nhật giá trị hiển thị tương tác thời gian thực khi kéo thanh trượt
+if (wsThresholdSlider && wsThresholdVal) {
+	wsThresholdSlider.addEventListener('input', function(e) {
+		wsThresholdVal.textContent = e.target.value;
+	});
+}
+
+if (wsDistanceSlider && wsDistanceVal) {
+	wsDistanceSlider.addEventListener('input', function(e) {
+		wsDistanceVal.textContent = e.target.value;
+	});
+}
+
+if (wsMinAreaSlider && wsMinAreaVal) {
+	wsMinAreaSlider.addEventListener('input', function(e) {
+		wsMinAreaVal.textContent = e.target.value + ' px²';
+	});
+}
+
+// Inject CSS animation spinner
+(function() {
+	var s = document.createElement('style');
+	s.textContent = '@keyframes wspin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}';
+	document.head.appendChild(s);
+})();
