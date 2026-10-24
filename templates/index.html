@@ -1,9 +1,12 @@
 <!doctype html>
-<html lang="en">
+<html lang="vi">
 	<head>
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-		<title>Image Viewer & Particle Analyzer</title>
+		<meta name="description" content="Image Viewer IUH — phân tích ảnh vi học, phân đoạn Watershed và đếm hạt tế bào bằng Distance Transform." />
+		<meta name="theme-color" content="#0b1f31" />
+		<title>Image Viewer IUH — Watershed Cell Analysis</title>
+		<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b1f31'/%3E%3Ccircle cx='12' cy='13' r='5' fill='%2314b8a6'/%3E%3Ccircle cx='21' cy='20' r='4' fill='%23f59e0b'/%3E%3C/svg%3E" />
 		<link rel="stylesheet" href="/static/css/style.css" onerror="this.onerror=null;this.href='../static/css/style.css';" />
 	</head>
 	<body>
@@ -12,60 +15,80 @@
 			<header class="app-header">
 				<div class="brand-section">
 					<div class="brand">
-						<span class="brand-badge-icon">
-							<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-								<circle cx="12" cy="12" r="10"></circle>
-								<circle cx="12" cy="12" r="4"></circle>
-								<line x1="4.93" y1="4.93" x2="9.17" y2="9.17"></line>
-								<line x1="14.83" y1="14.83" x2="19.07" y2="19.07"></line>
-								<line x1="14.83" y1="9.17" x2="19.07" y2="4.93"></line>
-								<line x1="4.93" y1="19.07" x2="9.17" y2="14.83"></line>
+						<span class="brand-badge-icon" aria-hidden="true">
+							<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+								<circle cx="12" cy="12" r="9"></circle>
+								<circle cx="12" cy="12" r="3.4"></circle>
+								<line x1="5.64" y1="5.64" x2="9.3" y2="9.3"></line>
+								<line x1="14.7" y1="14.7" x2="18.36" y2="18.36"></line>
+								<line x1="14.7" y1="9.3" x2="18.36" y2="5.64"></line>
+								<line x1="5.64" y1="18.36" x2="9.3" y2="14.7"></line>
 							</svg>
 						</span>
-						<span class="brand-title">Image Viewer IUH</span>
+						<div class="brand-copy">
+							<span class="brand-title">Image Viewer <span>IUH</span></span>
+							<span class="brand-tagline">Watershed Cell Analysis Studio</span>
+						</div>
 					</div>
-					<div class="brand-tagline">Hệ thống xử lý hình ảnh & Đếm hạt tế bào vi phân Watershed</div>
+					<div class="brand-status">
+						<span class="brand-status-dot" aria-hidden="true"></span>
+						<span>Local analysis engine</span>
+					</div>
 				</div>
 
 				<div class="header-actions">
 					<!-- NÚT UPLOAD FILE ẢNH -->
-					<label class="upload-button" for="mediaInput" title="Tải ảnh tế bào hoặc mẫu hạt lên hệ thống">
-						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+					<label class="upload-button upload-trigger" for="mediaInput" title="Tải ảnh tế bào hoặc mẫu hạt lên hệ thống">
+						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 							<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
 							<polyline points="17 8 12 3 7 8"></polyline>
 							<line x1="12" y1="3" x2="12" y2="15"></line>
 						</svg>
-						<span>Upload file</span>
+						<span class="button-label">
+							<span class="button-title">Upload file</span>
+							<span class="button-sub">Ảnh vi học</span>
+						</span>
 						<input id="mediaInput" type="file" accept="image/*" />
 					</label>
 
 					<!-- NÚT SAVE (LƯU PHIÊN VÀO SERVER LOCAL) -->
-					<button id="saveButton" class="upload-button save-btn" title="Lưu phiên làm việc vào máy chủ">
-						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+					<button id="saveButton" type="button" class="upload-button save-btn" title="Lưu phiên làm việc vào máy chủ">
+						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 							<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
 							<polyline points="17 21 17 13 7 13 7 21"></polyline>
 							<polyline points="7 3 7 8 15 8"></polyline>
 						</svg>
-						<span>Save</span>
+						<span class="button-label">
+							<span class="button-title">Lưu phiên</span>
+							<span class="button-sub">Server local</span>
+						</span>
 					</button>
 
 					<!-- NÚT HISTORY (XEM CÁC PHIÊN ĐÃ LƯU) -->
-					<button id="historyButton" class="upload-button history-btn" title="Xem danh sách phiên đã lưu">
-						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+					<button id="historyButton" type="button" class="upload-button history-btn" title="Xem danh sách phiên đã lưu">
+						<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 							<circle cx="12" cy="12" r="10"></circle>
 							<polyline points="12 6 12 12 16 14"></polyline>
 						</svg>
-						<span>History</span>
+						<span class="button-label">
+							<span class="button-title">History</span>
+							<span class="button-sub">Phiên đã lưu</span>
+						</span>
 					</button>
+
+					<div class="header-action-divider" aria-hidden="true"></div>
 
 					<!-- KHU VỰC EXPORT (CHỌN ĐỊNH DẠNG TẢI VỀ) -->
 					<div class="export-controls">
-						<select id="exportFormat" class="export-select" title="Định dạng xuất">
-							<option value="jpg">JPG</option>
-							<option value="png">PNG</option>
-						</select>
-						<button id="exportButton" class="upload-button export-btn" title="Tải ảnh đã xử lý về máy">
-							<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+						<label class="export-select-wrap">
+							<span class="visually-hidden">Định dạng ảnh xuất</span>
+							<select id="exportFormat" class="export-select" title="Định dạng xuất">
+								<option value="jpg">JPG</option>
+								<option value="png">PNG</option>
+							</select>
+						</label>
+						<button id="exportButton" type="button" class="upload-button export-btn" title="Tải ảnh đã xử lý về máy">
+							<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 								<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
 								<polyline points="7 10 12 15 17 10"></polyline>
 								<line x1="12" y1="15" x2="12" y2="3"></line>
@@ -78,54 +101,98 @@
 
 			<!-- KHU VỰC CHÍNH (PREVIEWS VÀ CÔNG CỤ ĐIỀU KHIỂN) -->
 			<main class="viewer-panel">
+				<div class="workspace-heading">
+					<div>
+						<span class="eyebrow">Không gian làm việc</span>
+						<h1 class="workspace-title">So sánh ảnh &amp; phân đoạn tế bào</h1>
+					</div>
+					<div class="workspace-heading-meta">
+						<span class="status-pill" id="workspaceStatus"><span class="status-dot"></span> Sẵn sàng</span>
+						<span class="workspace-hint">Ctrl + Enter để chạy phân tích</span>
+					</div>
+				</div>
+
 				<!-- SO SÁNH ẢNH TRƯỚC VÀ SAU XỬ LÝ -->
 				<div class="comparison-grid">
-					<section class="preview-card">
+					<section class="preview-card preview-card-source">
 						<div class="card-header">
 							<div class="card-header-left">
-								<span class="preview-badge-icon">
+								<span class="card-step">01</span>
+								<span class="preview-badge-icon" aria-hidden="true">
 									<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
 										<rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
 										<circle cx="8.5" cy="8.5" r="1.5"></circle>
 										<polyline points="21 15 16 10 5 21"></polyline>
 									</svg>
 								</span>
-								<span>Ảnh gốc (Before)</span>
+								<span class="card-heading">
+									<span class="card-title">Ảnh gốc</span>
+									<span class="card-subtitle">Nguồn đầu vào</span>
+								</span>
 							</div>
-							<span class="stage-tag">Original</span>
+							<span class="stage-tag">Source</span>
 						</div>
-						<div id="beforePreview" class="media-stage empty">
+						<div id="beforePreview" class="media-stage empty" tabindex="0" role="img" aria-label="Ảnh gốc được chọn">
 							<div class="empty-placeholder">
 								<span class="empty-icon">🖼️</span>
 								<div class="empty-title">Chưa có ảnh được chọn</div>
-								<div class="empty-sub">Nhấn "Upload file" ở thanh trên để tải ảnh lên</div>
+								<div class="empty-sub">Kéo thả ảnh vào đây hoặc nhấn <strong>Upload file</strong> để bắt đầu.</div>
+								<span class="empty-hint">JPG · PNG · WEBP · BMP</span>
 							</div>
+						</div>
+						<div class="media-footer">
+							<span class="media-footer-item">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><path d="M21 15l-5-5L5 21"></path></svg>
+								<span id="sourceMeta">Chưa tải ảnh</span>
+							</span>
+							<span class="media-footer-item media-footer-dim">Preview tối đa 1080px</span>
 						</div>
 					</section>
 
-					<section class="preview-card">
+					<section class="preview-card preview-card-result">
 						<div class="card-header">
 							<div class="card-header-left">
-								<span class="preview-badge-icon highlight">
+								<span class="card-step accent">02</span>
+								<span class="preview-badge-icon highlight" aria-hidden="true">
 									<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
 										<path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"></path>
 									</svg>
 								</span>
-								<span>Kết quả xử lý (After)</span>
+								<span class="card-heading">
+									<span class="card-title">Kết quả phân tích</span>
+									<span class="card-subtitle" id="afterViewLabel">Watershed · Distance Transform</span>
+								</span>
 							</div>
 							<div class="card-header-right">
-								<div class="watershed-indicator" title="Hiển thị kết quả xử lý và đường viền phân đoạn">
+								<div class="after-view-toggle" id="afterViewToggle" hidden>
+									<button type="button" class="view-toggle-btn is-active" data-after-view="result" aria-pressed="true">Watershed</button>
+									<button type="button" class="view-toggle-btn" data-after-view="distance" aria-pressed="false">Distance</button>
+								</div>
+								<div class="watershed-indicator" id="afterLiveIndicator" title="Trạng thái preview kết quả">
 									<span class="pulse-indicator"></span>
-									<span class="indicator-label">Active Preview</span>
+									<span class="indicator-label" id="afterLiveLabel">Ready</span>
 								</div>
 							</div>
 						</div>
-						<div id="afterPreview" class="media-stage empty">
+						<div id="afterPreview" class="media-stage empty" role="img" aria-label="Kết quả phân tích ảnh">
 							<div class="empty-placeholder">
 								<span class="empty-icon">🔬</span>
-								<div class="empty-title">Kết quả biến đổi & Phân đoạn Watershed</div>
-								<div class="empty-sub">Ảnh sau khi căn chỉnh hoặc đếm hạt vi phân sẽ hiển thị tại đây</div>
+								<div class="empty-title">Kết quả biến đổi &amp; phân đoạn</div>
+								<div class="empty-sub">Ảnh sau khi căn chỉnh hoặc đếm hạt vi phân sẽ hiển thị tại đây.</div>
+								<span class="empty-hint">Watershed segmentation</span>
 							</div>
+						</div>
+						<div class="distance-legend" id="distanceLegend" hidden>
+							<span>Rìa hạt</span>
+							<span class="distance-scale" aria-hidden="true"></span>
+							<span>Tâm hạt</span>
+						</div>
+						<div class="media-footer">
+							<span class="media-footer-item">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 12h4l2-7 4 14 2-7h6"></path></svg>
+								<span id="analysisMeta">Chưa có dữ liệu phân tích</span>
+							</span>
+							<span class="result-chip" id="analysisChip" data-state="idle">Idle</span>
 						</div>
 					</section>
 				</div>
@@ -140,57 +207,66 @@
 					<div class="feature-navigation-bar">
 						<div class="feature-tabs">
 							<label for="tabTransform" class="feature-tab-btn" id="btnTabTransform">
-								<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+								<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 									<polyline points="15 3 21 3 21 9"></polyline>
 									<polyline points="9 21 3 21 3 15"></polyline>
 									<line x1="21" y1="3" x2="14" y2="10"></line>
 									<line x1="3" y1="21" x2="10" y2="14"></line>
 								</svg>
 								<div class="tab-label-group">
-									<span class="tab-title">Căn chỉnh & Biến đổi</span>
-									<span class="tab-desc">Zoom • Rotate • Scale / Crop</span>
+									<span class="tab-title">Căn chỉnh &amp; Biến đổi</span>
+									<span class="tab-desc">Zoom · Rotate · Crop</span>
 								</div>
 							</label>
 
 							<label for="tabParticle" class="feature-tab-btn" id="btnTabParticle">
-								<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+								<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 									<circle cx="12" cy="12" r="10"></circle>
 									<circle cx="12" cy="12" r="6"></circle>
 									<circle cx="12" cy="12" r="2"></circle>
 								</svg>
 								<div class="tab-label-group">
-									<span class="tab-title">Đếm hạt & Tế bào</span>
-									<span class="tab-desc">Viền vi phân Watershed • Dữ liệu số</span>
+									<span class="tab-title">Đếm hạt &amp; Tế bào</span>
+									<span class="tab-desc">Watershed · Distance Transform</span>
 								</div>
-								<span class="tab-badge">Mới</span>
+								<span class="tab-badge">5A</span>
 							</label>
 						</div>
 
 						<div class="feature-bar-info">
-							<span class="mode-info-icon">💡</span>
-							<span class="mode-info-text mode-info-transform">Chế độ 1: Thu phóng, xoay góc và cắt viền tỷ lệ ảnh</span>
-							<span class="mode-info-text mode-info-particle">Chế độ 2: Tự động phân đoạn Watershed, đếm hạt & đo lường số liệu</span>
+							<span class="mode-info-icon" aria-hidden="true">💡</span>
+							<span class="mode-info-text mode-info-transform">Tinh chỉnh góc nhìn trước khi phân tích ảnh.</span>
+							<span class="mode-info-text mode-info-particle">Distance Transform tách cụm dính, Watershed vẽ viền chính xác.</span>
 						</div>
 					</div>
 
-					<!-- GIAO DIỆN TÙY CHỌN 1: CĂN CHỈNH & BIẾN ĐỔI (ZOOM / ROTATE / SCALE-CROP GỘP LÀM 1) -->
+					<!-- GIAO DIỆN TÙY CHỌN 1: CĂN CHỈNH & BIẾN ĐỔI -->
 					<div class="feature-panel panel-transform">
+						<div class="panel-intro">
+							<div>
+								<span class="eyebrow">Hiệu chỉnh ảnh</span>
+								<h2 class="panel-title">Căn chỉnh khung hình</h2>
+							</div>
+							<p class="panel-description">Preview được cập nhật tự động. Các phép biến đổi chỉ áp dụng cho ảnh xuất và phiên lưu.</p>
+						</div>
 						<div class="tool-panel">
 							<div class="control-card">
 								<div class="control-header">
 									<div class="control-header-title">
-										<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-											<circle cx="11" cy="11" r="8"></circle>
-											<line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-											<line x1="11" y1="8" x2="11" y2="14"></line>
-											<line x1="8" y1="11" x2="14" y2="11"></line>
-										</svg>
-										<span>Zoom (Thu phóng)</span>
+										<span class="control-icon" aria-hidden="true">
+											<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+												<circle cx="11" cy="11" r="8"></circle>
+												<line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+												<line x1="11" y1="8" x2="11" y2="14"></line>
+												<line x1="8" y1="11" x2="14" y2="11"></line>
+											</svg>
+										</span>
+										<span>Zoom</span>
 									</div>
 									<span id="zoomValue" class="slider-value">100%</span>
 								</div>
 								<div class="slider-container">
-									<input id="zoomSlider" type="range" min="50" max="200" value="100" step="5" />
+									<input id="zoomSlider" type="range" min="50" max="200" value="100" step="5" aria-label="Thu phóng" />
 								</div>
 								<div class="control-scale-marks">
 									<span>50%</span>
@@ -202,16 +278,18 @@
 							<div class="control-card">
 								<div class="control-header">
 									<div class="control-header-title">
-										<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-											<polyline points="23 4 23 10 17 10"></polyline>
-											<path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
-										</svg>
-										<span>Rotate (Xoay góc)</span>
+										<span class="control-icon" aria-hidden="true">
+											<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+												<polyline points="23 4 23 10 17 10"></polyline>
+												<path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+											</svg>
+										</span>
+										<span>Rotate</span>
 									</div>
 									<span id="rotateValue" class="slider-value">0°</span>
 								</div>
 								<div class="slider-container">
-									<input id="rotateSlider" type="range" min="-180" max="180" value="0" step="5" />
+									<input id="rotateSlider" type="range" min="-180" max="180" value="0" step="5" aria-label="Xoay góc" />
 								</div>
 								<div class="control-scale-marks">
 									<span>-180°</span>
@@ -223,16 +301,18 @@
 							<div class="control-card">
 								<div class="control-header">
 									<div class="control-header-title">
-										<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-											<path d="M6 2v14a2 2 0 0 0 2 2h14"></path>
-											<path d="M18 22V8a2 2 0 0 0-2-2H2"></path>
-										</svg>
-										<span>Crop / Scale (Cắt viền)</span>
+										<span class="control-icon" aria-hidden="true">
+											<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+												<path d="M6 2v14a2 2 0 0 0 2 2h14"></path>
+												<path d="M18 22V8a2 2 0 0 0-2-2H2"></path>
+											</svg>
+										</span>
+										<span>Crop / Scale</span>
 									</div>
 									<span id="cropValue" class="slider-value">0%</span>
 								</div>
 								<div class="slider-container">
-									<input id="cropSlider" type="range" min="0" max="30" value="0" step="1" />
+									<input id="cropSlider" type="range" min="0" max="30" value="0" step="1" aria-label="Cắt viền theo tỷ lệ phần trăm" />
 								</div>
 								<div class="control-scale-marks">
 									<span>0%</span>
@@ -241,110 +321,142 @@
 								</div>
 							</div>
 						</div>
+						<div class="transform-footer">
+							<button type="button" id="btnResetTransform" class="text-action-btn" title="Đưa Zoom, Rotate, Crop về mặc định">
+								<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
+								<span>Đặt lại biến đổi</span>
+							</button>
+							<span class="transform-footer-hint">Ảnh gốc không bị thay đổi — mọi thao tác đều không phá hủy.</span>
+						</div>
 					</div>
 
-					<!-- GIAO DIỆN TÙY CHỌN 2: ĐẾM HẠT & PHÂN ĐOẠN WATERSHED RIÊNG BIỆT -->
+					<!-- GIAO DIỆN TÙY CHỌN 2: ĐẾM HẠT & PHÂN ĐOẠN WATERSHED -->
 					<div class="feature-panel panel-particle">
+						<div class="pipeline-strip" aria-label="Pipeline phân tích">
+							<span class="pipeline-label">Pipeline</span>
+							<span class="pipeline-step"><b>1</b> Grayscale</span>
+							<span class="pipeline-arrow" aria-hidden="true">→</span>
+							<span class="pipeline-step"><b>2</b> Binarize</span>
+							<span class="pipeline-arrow" aria-hidden="true">→</span>
+							<span class="pipeline-step"><b>3</b> Distance</span>
+							<span class="pipeline-arrow" aria-hidden="true">→</span>
+							<span class="pipeline-step"><b>4</b> Watershed</span>
+							<span class="pipeline-arrow" aria-hidden="true">→</span>
+							<span class="pipeline-step"><b>5</b> Measure</span>
+							<span class="pipeline-status" id="pipelineStatus" data-state="idle"><span></span> Chờ ảnh</span>
+						</div>
+
 						<div class="particle-dashboard">
 							<!-- CỘT TRÁI: BẢNG ĐIỀU KHIỂN & THAM SỐ THUẬT TOÁN WATERSHED -->
 							<div class="particle-config-panel">
 								<div class="particle-box">
 									<div class="particle-box-header">
 										<div class="box-header-title">
-											<span class="box-icon">⚙️</span>
-											<span>Tham số thuật toán Watershed</span>
+											<span class="box-icon" aria-hidden="true">
+												<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+											</span>
+											<span>Tham số thuật toán</span>
 										</div>
-										<span class="chip chip-cyan">Segmentation</span>
+										<span class="chip chip-cyan">5A · Segmentation</span>
 									</div>
 
 									<div class="config-section">
-										<!-- Chọn phương pháp ngưỡng -->
-										<div class="config-item">
-											<label class="config-label" for="wsMethodSelect">
-												<span>Phương pháp phân ngưỡng (Binarization)</span>
-											</label>
-											<select id="wsMethodSelect" class="config-select">
-												<option value="otsu">Tự động Otsu (Otsu Threshold)</option>
-												<option value="adaptive">Ngưỡng thích nghi (Adaptive Gaussian)</option>
-												<option value="triangle">Ngưỡng tam giác (Triangle)</option>
-												<option value="manual">Tùy chỉnh thủ công (Manual)</option>
-											</select>
+										<!-- NHÓM 01: NHỊ PHÂN HÓA -->
+										<div class="config-group">
+											<div class="config-group-title"><span>01</span> Nhị phân hóa</div>
+
+											<div class="config-item">
+												<label class="config-label" for="wsMethodSelect">Phương pháp phân ngưỡng</label>
+												<select id="wsMethodSelect" class="config-select">
+													<option value="otsu">Tự động Otsu (Otsu Threshold)</option>
+													<option value="adaptive">Ngưỡng thích nghi (Adaptive Gaussian)</option>
+													<option value="triangle">Ngưỡng tam giác (Triangle)</option>
+													<option value="manual">Tùy chỉnh thủ công (Manual)</option>
+												</select>
+												<div class="config-item-sub" id="wsMethodHint">Otsu tự động tìm ngưỡng tối ưu cho ảnh nền sáng, vật thể tối.</div>
+											</div>
+
+											<div class="config-item" id="wsThresholdItem">
+												<div class="config-label-row">
+													<label for="wsThresholdSlider">Ngưỡng nhị phân</label>
+													<span id="wsThresholdVal" class="slider-val-badge">128</span>
+												</div>
+												<input id="wsThresholdSlider" class="styled-range" type="range" min="1" max="254" value="128" aria-label="Ngưỡng nhị phân" />
+												<div class="slider-hints">
+													<span>Tối (1)</span>
+													<span>Trung vị (128)</span>
+													<span>Sáng (254)</span>
+												</div>
+												<div class="config-item-sub config-item-note">Chỉ dùng khi phương pháp là <strong>Manual</strong>.</div>
+											</div>
 										</div>
 
-										<!-- Slider ngưỡng nhị phân -->
-										<div class="config-item">
-											<div class="config-label-row">
-												<label for="wsThresholdSlider">Ngưỡng nhị phân (Threshold)</label>
-												<span id="wsThresholdVal" class="slider-val-badge">128</span>
+										<!-- NHÓM 02: PHÂN ĐOẠN -->
+										<div class="config-group">
+											<div class="config-group-title"><span>02</span> Phân đoạn</div>
+
+											<div class="config-item">
+												<div class="config-label-row">
+													<label for="wsDistanceSlider">Hệ số tách cụm dính</label>
+													<span id="wsDistanceVal" class="slider-val-badge">0.45</span>
+												</div>
+												<input id="wsDistanceSlider" class="styled-range" type="range" min="0.1" max="0.9" step="0.05" value="0.45" aria-label="Hệ số tách cụm dính" />
+												<div class="config-item-sub">Tăng để tách các tế bào chạm nhau; giảm nếu hạt nhỏ bị mất.</div>
 											</div>
-											<input id="wsThresholdSlider" class="styled-range" type="range" min="1" max="254" value="128" oninput="document.getElementById('wsThresholdVal').textContent = this.value" />
-											<div class="slider-hints">
-												<span>Tối (1)</span>
-												<span>Trung vị (128)</span>
-												<span>Sáng (254)</span>
+
+											<div class="config-item">
+												<div class="config-label-row">
+													<label for="wsMinAreaSlider">Diện tích hạt tối thiểu</label>
+													<span id="wsMinAreaVal" class="slider-val-badge">20 px²</span>
+												</div>
+												<input id="wsMinAreaSlider" class="styled-range" type="range" min="5" max="500" step="5" value="20" aria-label="Diện tích hạt tối thiểu" />
+												<div class="config-item-sub">Lọc bụi bẩn, cặn mẫu hoặc nhiễu kích thước nhỏ.</div>
 											</div>
 										</div>
 
-										<!-- Slider hệ số biến đổi khoảng cách -->
-										<div class="config-item">
-											<div class="config-label-row">
-												<label for="wsDistanceSlider">Hệ số tách cụm dính (Distance Factor)</label>
-												<span id="wsDistanceVal" class="slider-val-badge">0.45</span>
-											</div>
-											<input id="wsDistanceSlider" class="styled-range" type="range" min="0.1" max="0.9" step="0.05" value="0.45" oninput="document.getElementById('wsDistanceVal').textContent = this.value" />
-											<div class="config-item-sub">Tách rời các tế bào/hạt bị dính chùm vào nhau.</div>
-										</div>
-
-										<!-- Slider diện tích hạt tối thiểu -->
-										<div class="config-item">
-											<div class="config-label-row">
-												<label for="wsMinAreaSlider">Diện tích hạt tối thiểu (Min Area)</label>
-												<span id="wsMinAreaVal" class="slider-val-badge">20 px²</span>
-											</div>
-											<input id="wsMinAreaSlider" class="styled-range" type="range" min="5" max="500" step="5" value="20" oninput="document.getElementById('wsMinAreaVal').textContent = this.value + ' px²'" />
-											<div class="config-item-sub">Lọc bỏ bụi bẩn, cặn mẫu hoặc nhiễu kích thước nhỏ.</div>
-										</div>
-
-										<div class="config-divider"></div>
-
-										<!-- TÙY CHỌN HIỂN THỊ VIỀN VÀ ĐÁNH DẤU LÊN ẢNH -->
-										<div class="config-item">
-											<div class="config-subheading">Tùy chọn vẽ viền Watershed & Đánh dấu</div>
+										<!-- NHÓM 03: HIỂN THỊ -->
+										<div class="config-group config-group-display">
+											<div class="config-group-title"><span>03</span> Hiển thị trên ảnh</div>
 											<div class="checkbox-options-grid">
 												<label class="checkbox-card">
 													<input type="checkbox" id="chkShowBoundary" checked />
-													<span class="custom-chk"></span>
-													<span class="chk-label">Vẽ đường viền vi phân Watershed</span>
+													<span class="custom-chk" aria-hidden="true"></span>
+													<span class="chk-label">Đường viền Watershed</span>
 												</label>
 												<label class="checkbox-card">
 													<input type="checkbox" id="chkShowCentroid" checked />
-													<span class="custom-chk"></span>
-													<span class="chk-label">Đánh dấu tâm tế bào (Centroid)</span>
+													<span class="custom-chk" aria-hidden="true"></span>
+													<span class="chk-label">Đánh dấu tâm hạt</span>
 												</label>
 												<label class="checkbox-card">
 													<input type="checkbox" id="chkShowId" checked />
-													<span class="custom-chk"></span>
-													<span class="chk-label">Hiển thị mã số định danh (#ID)</span>
+													<span class="custom-chk" aria-hidden="true"></span>
+													<span class="chk-label">Mã định danh #ID</span>
 												</label>
 												<label class="checkbox-card">
 													<input type="checkbox" id="chkColorMap" />
-													<span class="custom-chk"></span>
-													<span class="chk-label">Tô màu đa sắc từng tế bào</span>
+													<span class="custom-chk" aria-hidden="true"></span>
+													<span class="chk-label">Tô màu từng tế bào</span>
 												</label>
 											</div>
 										</div>
+									</div>
+
+									<div class="config-tip">
+										<span class="config-tip-icon" aria-hidden="true">💡</span>
+										<span>Phân tích chạy trên <strong>file gốc</strong>. Nhấn <kbd>Ctrl</kbd> + <kbd>Enter</kbd> để chạy nhanh khi đang ở tab này.</span>
 									</div>
 
 									<!-- NÚT HÀNH ĐỘNG THỰC THI -->
 									<div class="particle-actions-row">
-										<button id="btnRunWatershed" class="particle-btn particle-run-btn" title="Chạy thuật toán Watershed để phát hiện viền và đếm số lượng hạt">
-											<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+										<button id="btnRunWatershed" type="button" class="particle-btn particle-run-btn" title="Chạy thuật toán Watershed để phát hiện viền và đếm số lượng hạt">
+											<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 												<polygon points="5 3 19 12 5 21 5 3"></polygon>
 											</svg>
-											<span>Thực hiện đếm hạt (Watershed)</span>
+											<span>Thực hiện đếm hạt</span>
 										</button>
-										<button id="btnResetWatershed" class="particle-btn particle-reset-btn" title="Đặt lại thông số mặc định">
-											<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+										<button id="btnResetWatershed" type="button" class="particle-btn particle-reset-btn" title="Đặt lại thông số mặc định" aria-label="Đặt lại thông số mặc định">
+											<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 												<polyline points="1 4 1 10 7 10"></polyline>
 												<path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
 											</svg>
@@ -355,12 +467,25 @@
 
 							<!-- CỘT PHẢI: KẾT QUẢ ĐO LƯỜNG DẠNG SỐ & BẢNG DỮ LIỆU ĐO ĐẠC -->
 							<div class="particle-analytics-panel">
+								<div class="analytics-heading">
+									<div>
+										<span class="eyebrow">Kết quả đo lường</span>
+										<h2 class="panel-title">Hồ sơ hạt / tế bào</h2>
+									</div>
+									<div class="analysis-status" id="analysisStatus" data-state="idle">
+										<span class="analysis-status-dot" aria-hidden="true"></span>
+										<span class="analysis-status-text">Chưa phân tích</span>
+									</div>
+								</div>
+
 								<!-- 4 THẺ CHỈ SỐ ĐO LƯỜNG DẠNG SỐ -->
 								<div class="metric-summary-cards">
 									<div class="metric-card card-total-count">
 										<div class="metric-card-top">
-											<span class="metric-card-title">Tổng số lượng hạt / tế bào</span>
-											<span class="metric-card-icon">🧮</span>
+											<span class="metric-card-title">Tổng số lượng hạt</span>
+											<span class="metric-card-icon" aria-hidden="true">
+												<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="7" cy="7" r="2.4"></circle><circle cx="17" cy="7" r="2.4"></circle><circle cx="7" cy="17" r="2.4"></circle><circle cx="17" cy="17" r="2.4"></circle></svg>
+											</span>
 										</div>
 										<div class="metric-card-number" id="metricTotalCount">--</div>
 										<div class="metric-card-footer">
@@ -369,10 +494,12 @@
 										</div>
 									</div>
 
-									<div class="metric-card">
+									<div class="metric-card metric-card-area">
 										<div class="metric-card-top">
 											<span class="metric-card-title">Diện tích trung bình</span>
-											<span class="metric-card-icon">📐</span>
+											<span class="metric-card-icon" aria-hidden="true">
+												<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="3"></rect><path d="M8 16l8-8"></path></svg>
+											</span>
 										</div>
 										<div class="metric-card-number" id="metricAvgArea">--</div>
 										<div class="metric-card-footer">
@@ -380,10 +507,12 @@
 										</div>
 									</div>
 
-									<div class="metric-card">
+									<div class="metric-card metric-card-coverage">
 										<div class="metric-card-top">
-											<span class="metric-card-title">Mật độ bao phủ (Coverage)</span>
-											<span class="metric-card-icon">📈</span>
+											<span class="metric-card-title">Mật độ bao phủ</span>
+											<span class="metric-card-icon" aria-hidden="true">
+												<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.2 15.9A10 10 0 1 1 8.1 2.8"></path><path d="M22 12A10 10 0 0 0 12 2v10z"></path></svg>
+											</span>
 										</div>
 										<div class="metric-card-number" id="metricCoverage">--</div>
 										<div class="metric-card-footer">
@@ -391,14 +520,16 @@
 										</div>
 									</div>
 
-									<div class="metric-card">
+									<div class="metric-card metric-card-circularity">
 										<div class="metric-card-top">
 											<span class="metric-card-title">Độ tròn trung bình</span>
-											<span class="metric-card-icon">⭕</span>
+											<span class="metric-card-icon" aria-hidden="true">
+												<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="3"></circle></svg>
+											</span>
 										</div>
 										<div class="metric-card-number" id="metricCircularity">--</div>
 										<div class="metric-card-footer">
-											<span class="metric-unit">Circularity (0 - 1)</span>
+											<span class="metric-unit">Circularity (0 – 1)</span>
 										</div>
 									</div>
 								</div>
@@ -407,12 +538,12 @@
 								<div class="particle-table-container">
 									<div class="table-header-bar">
 										<div class="table-header-left">
-											<span class="table-title">Dữ liệu phân tích chi tiết (Particle Measurements)</span>
+											<span class="table-title">Dữ liệu phân tích chi tiết</span>
 											<span class="count-badge" id="particleDataCount">0 kết quả</span>
 										</div>
 										<div class="table-header-actions">
-											<button id="btnExportDataCsv" class="table-action-btn export-csv" title="Tải xuống tệp CSV chứa số đo chi tiết">
-												<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+											<button id="btnExportDataCsv" type="button" class="table-action-btn export-csv" title="Tải xuống tệp CSV chứa số đo chi tiết">
+												<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
 													<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
 													<polyline points="7 10 12 15 17 10"></polyline>
 													<line x1="12" y1="15" x2="12" y2="3"></line>
@@ -424,15 +555,16 @@
 
 									<div class="data-table-scroll">
 										<table class="measurements-table" id="particleTable">
+											<caption class="visually-hidden">Bảng số đo hình thái từng hạt sau phân đoạn Watershed</caption>
 											<thead>
 												<tr>
-													<th>#ID</th>
-													<th>Tọa độ tâm X</th>
-													<th>Tọa độ tâm Y</th>
-													<th>Diện tích (px²)</th>
-													<th>Chu vi (px)</th>
-													<th>Đường kính (px)</th>
-													<th>Độ tròn</th>
+													<th scope="col">#ID</th>
+													<th scope="col">Tâm X</th>
+													<th scope="col">Tâm Y</th>
+													<th scope="col">Diện tích (px²)</th>
+													<th scope="col">Chu vi (px)</th>
+													<th scope="col">Đường kính (px)</th>
+													<th scope="col">Độ tròn</th>
 												</tr>
 											</thead>
 											<tbody id="particleTableBody">
@@ -442,7 +574,7 @@
 															<span class="empty-table-icon">🔬</span>
 															<div class="empty-table-text">Chưa có dữ liệu đếm hạt</div>
 															<div class="empty-table-sub">
-																Vui lòng tải ảnh và nhấn nút <strong>"Thực hiện đếm hạt (Watershed)"</strong> để hệ thống phân đoạn vi phân và xuất bảng số liệu.
+																Vui lòng tải ảnh và nhấn nút <strong>"Thực hiện đếm hạt"</strong> để hệ thống phân đoạn vi phân và xuất bảng số liệu.
 															</div>
 														</div>
 													</td>
@@ -458,15 +590,18 @@
 			</main>
 		</div>
 
-		<!-- MODAL DANH SÁCH PHIÊN LÀM VIỆC ĐÃ LƯU (GIỮ NGUYÊN HOẠT ĐỘNG VỚI JS HIỆN TẠI) -->
-		<div id="sessionsModal" class="modal-backdrop">
+		<!-- MODAL DANH SÁCH PHIÊN LÀM VIỆC ĐÃ LƯU -->
+		<div id="sessionsModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="sessionsModalTitle">
 			<div class="modal-dialog">
 				<div class="modal-header">
-					<div class="modal-title">
-						<span>📁 Saved Sessions</span>
-						<span id="sessionCountBadge" class="count-badge">0</span>
+					<div>
+						<div class="modal-title" id="sessionsModalTitle">
+							<span>📁 Saved Sessions</span>
+							<span id="sessionCountBadge" class="count-badge">0</span>
+						</div>
+						<p class="modal-subtitle">Khôi phục lại ảnh gốc và thông số biến đổi đã lưu.</p>
 					</div>
-					<button id="closeModalBtn" class="modal-close-btn" title="Đóng">&times;</button>
+					<button id="closeModalBtn" type="button" class="modal-close-btn" title="Đóng" aria-label="Đóng">&times;</button>
 				</div>
 				<div class="modal-body">
 					<div id="sessionsList" class="sessions-list">
@@ -477,7 +612,7 @@
 		</div>
 
 		<!-- TOAST THÔNG BÁO NHANH -->
-		<div id="toastNotification" class="toast-notification"></div>
+		<div id="toastNotification" class="toast-notification" role="status" aria-live="polite"></div>
 
 		<!-- Tự động tương thích khi chạy giao diện từ Live Server / Live Preview của Visual Studio Code -->
 		<script>

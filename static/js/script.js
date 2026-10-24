@@ -1,171 +1,502 @@
-// --- 1. KẾT NỐI VỚI CÁC THÀNH PHẦN TRÊN GIAO DIỆN ---
-const mediaInput = document.getElementById('mediaInput');
-const beforePreview = document.getElementById('beforePreview');
-const afterPreview = document.getElementById('afterPreview');
+// ===========================================================================
+// IMAGE VIEWER IUH — FRONTEND CONTROLLER
+// Toàn bộ xử lý ảnh (Watershed, Distance Transform, đo lường) nằm ở backend.
+// Frontend chỉ thu thập tham số, gọi API và render kết quả.
+// ===========================================================================
 
-const zoomSlider = document.getElementById('zoomSlider');
-const zoomValue = document.getElementById('zoomValue');
+'use strict';
 
-const rotateSlider = document.getElementById('rotateSlider');
-const rotateValue = document.getElementById('rotateValue');
+const $ = (id) => document.getElementById(id);
 
-const cropSlider = document.getElementById('cropSlider');
-const cropValue = document.getElementById('cropValue');
+// --- 1. KẾT NỐI CÁC THÀNH PHẦN GIAO DIỆN -----------------------------------
 
-const saveButton = document.getElementById('saveButton');
-const historyButton = document.getElementById('historyButton');
-const exportButton = document.getElementById('exportButton');
-const exportFormat = document.getElementById('exportFormat');
+const mediaInput = $('mediaInput');
+const beforePreview = $('beforePreview');
+const afterPreview = $('afterPreview');
+const sourceMeta = $('sourceMeta');
 
-const sessionsModal = document.getElementById('sessionsModal');
-const closeModalBtn = document.getElementById('closeModalBtn');
-const sessionsList = document.getElementById('sessionsList');
-const sessionCountBadge = document.getElementById('sessionCountBadge');
-const toastNotification = document.getElementById('toastNotification');
+const zoomSlider = $('zoomSlider');
+const zoomValue = $('zoomValue');
+const rotateSlider = $('rotateSlider');
+const rotateValue = $('rotateValue');
+const cropSlider = $('cropSlider');
+const cropValue = $('cropValue');
+const btnResetTransform = $('btnResetTransform');
 
-let currentFile = null;
+const saveButton = $('saveButton');
+const historyButton = $('historyButton');
+const exportButton = $('exportButton');
+const exportFormat = $('exportFormat');
 
-// --- 2. XỬ LÝ SỰ KIỆN CHỌN FILE ---
-mediaInput.addEventListener('change', function (event) {
-	const file = event.target.files[0];
-	if (file) {
-		currentFile = file;
-		const reader = new FileReader();
-		reader.onload = function (e) {
-			beforePreview.innerHTML = `<img src="${e.target.result}" style="max-width: 100%; max-height: 100%; border-radius: 8px;">`;
+const sessionsModal = $('sessionsModal');
+const closeModalBtn = $('closeModalBtn');
+const sessionsList = $('sessionsList');
+const sessionCountBadge = $('sessionCountBadge');
+const toastNotification = $('toastNotification');
 
-			// Xóa rỗng thẻ After để tạo lại từ đầu cho ảnh mới
-			afterPreview.innerHTML = '';
-			sendToBackend();
-		};
-		reader.readAsDataURL(file);
-	}
+const workspaceStatus = $('workspaceStatus');
+const afterViewToggle = $('afterViewToggle');
+const afterViewLabel = $('afterViewLabel');
+const afterLiveIndicator = $('afterLiveIndicator');
+const afterLiveLabel = $('afterLiveLabel');
+const distanceLegend = $('distanceLegend');
+const analysisMeta = $('analysisMeta');
+const analysisChip = $('analysisChip');
+const analysisStatus = $('analysisStatus');
+const pipelineStatus = $('pipelineStatus');
+
+const btnRunWatershed = $('btnRunWatershed');
+const btnResetWatershed = $('btnResetWatershed');
+const btnExportDataCsv = $('btnExportDataCsv');
+
+const wsMethodSelect = $('wsMethodSelect');
+const wsMethodHint = $('wsMethodHint');
+const wsThresholdItem = $('wsThresholdItem');
+const wsThresholdSlider = $('wsThresholdSlider');
+const wsThresholdVal = $('wsThresholdVal');
+const wsDistanceSlider = $('wsDistanceSlider');
+const wsDistanceVal = $('wsDistanceVal');
+const wsMinAreaSlider = $('wsMinAreaSlider');
+const wsMinAreaVal = $('wsMinAreaVal');
+
+const chkShowBoundary = $('chkShowBoundary');
+const chkShowCentroid = $('chkShowCentroid');
+const chkShowId = $('chkShowId');
+const chkColorMap = $('chkColorMap');
+
+const metricTotalCount = $('metricTotalCount');
+const metricAvgArea = $('metricAvgArea');
+const metricCoverage = $('metricCoverage');
+const metricCircularity = $('metricCircularity');
+
+const particleTableBody = $('particleTableBody');
+const particleDataCount = $('particleDataCount');
+const tabParticle = $('tabParticle');
+
+const numberFormatter = new Intl.NumberFormat('vi-VN', {
+	maximumFractionDigits: 2,
 });
 
-// --- 3 & 4. CẬP NHẬT GIAO DIỆN VÀ GỌI API BẰNG DEBOUNCE & ABORTCONTROLLER ---
-let timeoutId = null;
-let currentAbortController = null;
+const TABLE_EMPTY_HTML = `
+	<tr class="table-placeholder-row">
+		<td colspan="7">
+			<div class="table-empty-box">
+				<span class="empty-table-icon">🔬</span>
+				<div class="empty-table-text">Chưa có dữ liệu đếm hạt</div>
+				<div class="empty-table-sub">
+					Vui lòng tải ảnh và nhấn nút <strong>"Thực hiện đếm hạt"</strong> để hệ thống phân đoạn vi phân và xuất bảng số liệu.
+				</div>
+			</div>
+		</td>
+	</tr>`;
 
-function handleSliderInput(e, textElement, suffix) {
-	textElement.textContent = `${e.target.value}${suffix}`;
-	clearTimeout(timeoutId);
-	timeoutId = setTimeout(() => {
-		sendToBackend();
-	}, 40);
+const AFTER_EMPTY_HTML = `
+	<div class="empty-placeholder">
+		<span class="empty-icon">🔬</span>
+		<div class="empty-title">Kết quả biến đổi &amp; phân đoạn</div>
+		<div class="empty-sub">Ảnh sau khi căn chỉnh hoặc đếm hạt vi phân sẽ hiển thị tại đây.</div>
+		<span class="empty-hint">Watershed segmentation</span>
+	</div>`;
+
+const state = {
+	currentFile: null,
+	previewAbort: null,
+	previewTimer: null,
+	particleAbort: null,
+	particleFile: null,
+	particleParams: null,
+	watershedImages: null,
+	activeAfterView: 'transform',
+	afterObjectUrl: null,
+	beforeObjectUrl: null,
+	isAnalyzing: false,
+	cachedSessions: [],
+};
+
+// --- 2. TIỆN ÍCH HIỂN THỊ ---------------------------------------------------
+
+function formatBytes(bytes) {
+	if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+	const units = ['B', 'KB', 'MB', 'GB'];
+	const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+	const value = bytes / Math.pow(1024, index);
+	return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
-zoomSlider.addEventListener('input', (e) => handleSliderInput(e, zoomValue, '%'));
-rotateSlider.addEventListener('input', (e) => handleSliderInput(e, rotateValue, '°'));
-cropSlider.addEventListener('input', (e) => handleSliderInput(e, cropValue, '%'));
+function showToast(message, duration = 3600) {
+	if (!toastNotification) return;
+	toastNotification.textContent = message;
+	toastNotification.classList.add('show');
+	window.clearTimeout(showToast._timer);
+	showToast._timer = window.setTimeout(() => {
+		toastNotification.classList.remove('show');
+	}, duration);
+}
 
-// --- 5. GỬI YÊU CẦU PREVIEW LÊN BACKEND ---
-async function sendToBackend() {
-	if (!currentFile) return;
-
-	if (currentAbortController) {
-		currentAbortController.abort();
+function setButtonBusy(button, busy, busyLabel = 'Đang xử lý...') {
+	if (!button) return;
+	if (busy) {
+		if (!button.dataset.idleHtml) {
+			button.dataset.idleHtml = button.innerHTML;
+		}
+		button.disabled = true;
+		button.classList.add('is-busy');
+		button.innerHTML =
+			`<span class="btn-spinner" aria-hidden="true"></span><span>${busyLabel}</span>`;
+	} else {
+		button.disabled = false;
+		button.classList.remove('is-busy');
+		if (button.dataset.idleHtml) {
+			button.innerHTML = button.dataset.idleHtml;
+			delete button.dataset.idleHtml;
+		}
 	}
-	currentAbortController = new AbortController();
+}
+
+function setWorkspaceStatus(stateName, text) {
+	if (!workspaceStatus) return;
+	workspaceStatus.dataset.state = stateName;
+	workspaceStatus.innerHTML = `<span class="status-dot"></span> ${text}`;
+}
+
+function setPipelineStatus(stateName, text) {
+	if (!pipelineStatus) return;
+	pipelineStatus.dataset.state = stateName;
+	pipelineStatus.innerHTML = `<span></span> ${text}`;
+}
+
+function setAnalysisStatus(stateName, text) {
+	if (!analysisStatus) return;
+	analysisStatus.dataset.state = stateName;
+	const textEl = analysisStatus.querySelector('.analysis-status-text');
+	if (textEl) textEl.textContent = text;
+}
+
+function setAfterIndicator(stateName, text) {
+	if (!afterLiveIndicator) return;
+	afterLiveIndicator.dataset.state = stateName;
+	if (afterLiveLabel) afterLiveLabel.textContent = text;
+}
+
+function setResultChip(stateName, text) {
+	if (!analysisChip) return;
+	analysisChip.dataset.state = stateName;
+	analysisChip.textContent = text;
+}
+
+function updateRangeFill(input) {
+	if (!input) return;
+	const min = Number.parseFloat(input.min || '0');
+	const max = Number.parseFloat(input.max || '100');
+	const value = Number.parseFloat(input.value || '0');
+	const percent = max > min ? ((value - min) / (max - min)) * 100 : 0;
+	input.style.setProperty('--fill', `${Math.max(0, Math.min(100, percent))}%`);
+}
+
+function refreshAllRangeFills() {
+	document.querySelectorAll('input[type="range"]').forEach(updateRangeFill);
+}
+
+function setBeforeImage(src, { objectUrl = false } = {}) {
+	if (!beforePreview) return;
+	if (state.beforeObjectUrl) {
+		URL.revokeObjectURL(state.beforeObjectUrl);
+		state.beforeObjectUrl = null;
+	}
+	if (objectUrl) state.beforeObjectUrl = src;
+
+	beforePreview.classList.remove('empty');
+	beforePreview.innerHTML = '';
+	const img = document.createElement('img');
+	img.src = src;
+	img.alt = 'Ảnh gốc được chọn';
+	img.decoding = 'async';
+	beforePreview.appendChild(img);
+}
+
+function setAfterImage(src, { objectUrl = false, alt = 'Kết quả phân tích' } = {}) {
+	if (!afterPreview) return;
+	if (state.afterObjectUrl) {
+		URL.revokeObjectURL(state.afterObjectUrl);
+		state.afterObjectUrl = null;
+	}
+	if (objectUrl) state.afterObjectUrl = src;
+
+	afterPreview.classList.remove('empty', 'is-processing');
+	afterPreview.innerHTML = '';
+	const img = document.createElement('img');
+	img.src = src;
+	img.alt = alt;
+	img.decoding = 'async';
+	afterPreview.appendChild(img);
+}
+
+function setAfterPlaceholder(icon, title, sub, hint = 'Watershed segmentation') {
+	if (!afterPreview) return;
+	afterPreview.classList.add('empty');
+	afterPreview.classList.remove('is-processing');
+	afterPreview.innerHTML = `
+		<div class="empty-placeholder">
+			<span class="empty-icon">${icon}</span>
+			<div class="empty-title">${title}</div>
+			<div class="empty-sub">${sub}</div>
+			<span class="empty-hint">${hint}</span>
+		</div>`;
+}
+
+function resetAnalysisUI() {
+	state.watershedImages = null;
+	state.particleFile = null;
+	state.particleParams = null;
+	state.activeAfterView = 'transform';
+
+	if (afterViewToggle) afterViewToggle.hidden = true;
+	if (distanceLegend) distanceLegend.hidden = true;
+	if (afterViewLabel) afterViewLabel.textContent = 'Watershed · Distance Transform';
+	setAfterIndicator('ready', 'Ready');
+	setResultChip('idle', 'Idle');
+	setAnalysisStatus('idle', 'Chưa phân tích');
+	setPipelineStatus('idle', 'Chờ ảnh');
+
+	if (analysisMeta) analysisMeta.textContent = 'Chưa có dữ liệu phân tích';
+	if (metricTotalCount) metricTotalCount.textContent = '--';
+	if (metricAvgArea) metricAvgArea.textContent = '--';
+	if (metricCoverage) metricCoverage.textContent = '--';
+	if (metricCircularity) metricCircularity.textContent = '--';
+	if (particleDataCount) particleDataCount.textContent = '0 kết quả';
+	if (particleTableBody) particleTableBody.innerHTML = TABLE_EMPTY_HTML;
+}
+
+// --- 3. TẢI ẢNH & PREVIEW BIẾN ĐỔI ----------------------------------------
+
+function handleFile(file) {
+	if (!file) return;
+
+	const looksLikeImage =
+		(file.type && file.type.startsWith('image/')) ||
+		/\.(jpe?g|png|webp|bmp|gif|tiff?)$/i.test(file.name || '');
+	if (!looksLikeImage) {
+		showToast('⚠️ File không phải ảnh. Vui lòng chọn JPG, PNG, WEBP hoặc BMP.');
+		return;
+	}
+
+	// Hủy yêu cầu cũ nếu người dùng chọn ảnh mới
+	if (state.previewAbort) {
+		state.previewAbort.abort();
+		state.previewAbort = null;
+	}
+	if (state.particleAbort) {
+		state.particleAbort.abort();
+		state.particleAbort = null;
+	}
+	if (state.isAnalyzing) setWatershedRunning(false);
+
+	state.currentFile = file;
+	resetAnalysisUI();
+	setWorkspaceStatus('ready', 'Sẵn sàng');
+	if (sourceMeta) {
+		sourceMeta.textContent = `${file.name || 'Ảnh'} · ${formatBytes(file.size)}`;
+	}
+
+	const reader = new FileReader();
+	reader.onload = (event) => {
+		setBeforeImage(event.target.result);
+		sendToBackend();
+	};
+	reader.onerror = () => {
+		showToast('❌ Không thể đọc file ảnh này.');
+	};
+	reader.readAsDataURL(file);
+
+	// Cho phép chọn lại đúng file vừa chọn ở lần sau
+	mediaInput.value = '';
+}
+
+if (mediaInput) {
+	mediaInput.addEventListener('change', (event) => {
+		handleFile(event.target.files && event.target.files[0]);
+	});
+}
+
+if (beforePreview) {
+	// Kéo thả ảnh vào khung Before
+	['dragenter', 'dragover'].forEach((eventName) => {
+		beforePreview.addEventListener(eventName, (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			beforePreview.classList.add('is-dragover');
+		});
+	});
+
+	['dragleave', 'drop'].forEach((eventName) => {
+		beforePreview.addEventListener(eventName, (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			beforePreview.classList.remove('is-dragover');
+		});
+	});
+
+	beforePreview.addEventListener('drop', (event) => {
+		const file = event.dataTransfer && event.dataTransfer.files
+			? event.dataTransfer.files[0]
+			: null;
+		if (file) handleFile(file);
+	});
+
+	// Bấm vào khung trống để mở hộp chọn file
+	beforePreview.addEventListener('click', () => {
+		if (beforePreview.classList.contains('empty') && mediaInput) {
+			mediaInput.click();
+		}
+	});
+
+	beforePreview.addEventListener('keydown', (event) => {
+		if ((event.key === 'Enter' || event.key === ' ') && beforePreview.classList.contains('empty')) {
+			event.preventDefault();
+			if (mediaInput) mediaInput.click();
+		}
+	});
+}
+
+// Ngăn trình duyệt mở ảnh khi người dùng kéo thả ra ngoài khung
+['dragover', 'drop'].forEach((eventName) => {
+	document.addEventListener(eventName, (event) => {
+		if (event.target !== beforePreview && !beforePreview?.contains(event.target)) {
+			event.preventDefault();
+		}
+	});
+});
+
+let previewTimeoutId = null;
+
+function handleSliderInput(input, valueElement, suffix) {
+	if (valueElement) valueElement.textContent = `${input.value}${suffix}`;
+	updateRangeFill(input);
+	window.clearTimeout(previewTimeoutId);
+	previewTimeoutId = window.setTimeout(() => {
+		sendToBackend();
+	}, 140);
+}
+
+if (zoomSlider) {
+	zoomSlider.addEventListener('input', () => handleSliderInput(zoomSlider, zoomValue, '%'));
+}
+if (rotateSlider) {
+	rotateSlider.addEventListener('input', () => handleSliderInput(rotateSlider, rotateValue, '°'));
+}
+if (cropSlider) {
+	cropSlider.addEventListener('input', () => handleSliderInput(cropSlider, cropValue, '%'));
+}
+
+async function sendToBackend() {
+	if (!state.currentFile) return;
+
+	if (state.previewAbort) state.previewAbort.abort();
+	const controller = new AbortController();
+	state.previewAbort = controller;
 
 	const formData = new FormData();
-	formData.append('file', currentFile);
-	formData.append('zoom', zoomSlider.value);
-	formData.append('rotate', rotateSlider.value);
-	formData.append('crop', cropSlider.value);
+	formData.append('file', state.currentFile);
+	formData.append('zoom', zoomSlider ? zoomSlider.value : '100');
+	formData.append('rotate', rotateSlider ? rotateSlider.value : '0');
+	formData.append('crop', cropSlider ? cropSlider.value : '0');
+
+	if (afterPreview) afterPreview.classList.add('is-processing');
+	if (!state.isAnalyzing) setWorkspaceStatus('running', 'Đang cập nhật preview');
 
 	try {
 		const response = await fetch('/api/process-image', {
 			method: 'POST',
 			body: formData,
-			signal: currentAbortController.signal,
+			signal: controller.signal,
 		});
 
-		if (response.ok) {
-			const blob = await response.blob();
-			const imageUrl = URL.createObjectURL(blob);
-			let imgEl = afterPreview.querySelector('img');
+		if (!response.ok) {
+			throw new Error(`Không thể tạo preview (${response.status}).`);
+		}
 
-			if (imgEl) {
-				imgEl.src = imageUrl;
-				imgEl.style.opacity = '1';
-			} else {
-				afterPreview.innerHTML = `<img src="${imageUrl}" style="max-width: 100%; max-height: 100%; border-radius: 8px;">`;
-			}
-		} else {
-			console.error('Lỗi xử lý từ Backend!');
-		}
+		const blob = await response.blob();
+		const imageUrl = URL.createObjectURL(blob);
+		setAfterImage(imageUrl, { objectUrl: true, alt: 'Ảnh sau biến đổi' });
+		state.activeAfterView = 'transform';
+		updateAfterViewButtons(null);
+		if (distanceLegend) distanceLegend.hidden = true;
+		if (afterViewLabel) afterViewLabel.textContent = 'Ảnh biến đổi · Preview';
+		setAfterIndicator('ready', 'Preview');
+		setResultChip('idle', 'Preview');
+		if (!state.isAnalyzing) setWorkspaceStatus('ready', 'Sẵn sàng');
 	} catch (error) {
-		if (error.name === 'AbortError') {
-			return;
+		if (error.name === 'AbortError') return;
+		if (state.previewAbort !== controller) return;
+		console.error('Lỗi preview:', error);
+		if (afterPreview) afterPreview.classList.remove('is-processing');
+		if (!state.isAnalyzing) setWorkspaceStatus('error', 'Lỗi preview');
+		showToast(`❌ ${error.message || 'Không thể kết nối backend.'}`);
+	} finally {
+		if (state.previewAbort === controller) {
+			if (afterPreview) afterPreview.classList.remove('is-processing');
+			state.previewAbort = null;
 		}
-		console.error('Lỗi kết nối:', error);
 	}
 }
 
-// --- 6. HỖ TRỢ TOAST THÔNG BÁO ---
-function showToast(message, duration = 3000) {
-	if (!toastNotification) return;
-	toastNotification.textContent = message;
-	toastNotification.classList.add('show');
-	setTimeout(() => {
-		toastNotification.classList.remove('show');
-	}, duration);
+if (btnResetTransform) {
+	btnResetTransform.addEventListener('click', () => {
+		if (zoomSlider) zoomSlider.value = '100';
+		if (rotateSlider) rotateSlider.value = '0';
+		if (cropSlider) cropSlider.value = '0';
+		if (zoomValue) zoomValue.textContent = '100%';
+		if (rotateValue) rotateValue.textContent = '0°';
+		if (cropValue) cropValue.textContent = '0%';
+		refreshAllRangeFills();
+		showToast('↺ Đã đặt lại Zoom / Rotate / Crop.');
+		sendToBackend();
+	});
 }
 
-// --- 7. XỬ LÝ LƯU PHIÊN LÀM VIỆC VÀO MÁY CHỦ (SAVE SESSION) ---
+// --- 4. LƯU PHIÊN & XUẤT ẢNH ----------------------------------------------
+
 async function saveSession() {
-	if (!currentFile) {
-		alert('Vui lòng tải ảnh lên trước khi lưu phiên làm việc!');
+	if (!state.currentFile) {
+		showToast('⚠️ Vui lòng tải ảnh lên trước khi lưu phiên.');
 		return;
 	}
 
-	const originalBtnText = saveButton.textContent;
-	saveButton.disabled = true;
-	saveButton.textContent = 'Saving...';
-
+	setButtonBusy(saveButton, true, 'Đang lưu...');
 	const formData = new FormData();
-	formData.append('file', currentFile);
-	formData.append('zoom', zoomSlider.value);
-	formData.append('rotate', rotateSlider.value);
-	formData.append('crop', cropSlider.value);
+	formData.append('file', state.currentFile);
+	formData.append('zoom', zoomSlider ? zoomSlider.value : '100');
+	formData.append('rotate', rotateSlider ? rotateSlider.value : '0');
+	formData.append('crop', cropSlider ? cropSlider.value : '0');
 
 	try {
 		const response = await fetch('/api/save-session', {
 			method: 'POST',
 			body: formData,
 		});
-
-		if (!response.ok) {
-			throw new Error('Lỗi từ server khi lưu phiên!');
-		}
-
-		const result = await response.json();
-		showToast('✓ Đã lưu phiên làm việc vào máy chủ!');
+		if (!response.ok) throw new Error('Server không lưu được phiên.');
+		await response.json();
+		showToast('✓ Đã lưu phiên làm việc vào máy chủ.');
 	} catch (error) {
-		console.error('Lỗi khi lưu phiên:', error);
-		alert('Có lỗi xảy ra trong quá trình lưu phiên làm việc!');
+		console.error('Lỗi lưu phiên:', error);
+		showToast(`❌ ${error.message || 'Có lỗi khi lưu phiên.'}`);
 	} finally {
-		saveButton.disabled = false;
-		saveButton.textContent = originalBtnText;
+		setButtonBusy(saveButton, false);
 	}
 }
 
-// --- 8. XỬ LÝ XUẤT ẢNH TẢI VỀ MÁY (EXPORT FILE) ---
-async function downloadProcessedImage(targetFormat, triggerBtn, loadingText) {
-	if (!currentFile) {
-		alert('Vui lòng tải ảnh lên trước khi thực hiện!');
+async function downloadProcessedImage(targetFormat, triggerBtn) {
+	if (!state.currentFile) {
+		showToast('⚠️ Vui lòng tải ảnh lên trước khi xuất file.');
 		return;
 	}
 
-	const originalBtnText = triggerBtn.textContent;
-	triggerBtn.disabled = true;
-	triggerBtn.textContent = loadingText;
-
+	setButtonBusy(triggerBtn, true, 'Đang xuất...');
 	const formData = new FormData();
-	formData.append('file', currentFile);
-	formData.append('zoom', zoomSlider.value);
-	formData.append('rotate', rotateSlider.value);
-	formData.append('crop', cropSlider.value);
+	formData.append('file', state.currentFile);
+	formData.append('zoom', zoomSlider ? zoomSlider.value : '100');
+	formData.append('rotate', rotateSlider ? rotateSlider.value : '0');
+	formData.append('crop', cropSlider ? cropSlider.value : '0');
 	formData.append('format', targetFormat);
 
 	try {
@@ -173,17 +504,11 @@ async function downloadProcessedImage(targetFormat, triggerBtn, loadingText) {
 			method: 'POST',
 			body: formData,
 		});
-
 		if (!response.ok) {
-			let errorDetail = 'Lỗi từ server khi xuất ảnh!';
-			try {
-				const errorText = await response.text();
-				if (errorText) errorDetail = errorText;
-			} catch (_) {}
-			throw new Error(errorDetail);
+			const errorText = await response.text().catch(() => '');
+			throw new Error(errorText || 'Server không xuất được ảnh.');
 		}
 
-		// Lấy tên file từ header Content-Disposition (ưu tiên chuẩn RFC 5987 / UTF-8 tiếng Việt)
 		let filename = '';
 		const disposition = response.headers.get('Content-Disposition');
 		if (disposition) {
@@ -191,56 +516,41 @@ async function downloadProcessedImage(targetFormat, triggerBtn, loadingText) {
 			if (utf8Match && utf8Match[1]) {
 				filename = decodeURIComponent(utf8Match[1]);
 			} else {
-				const matches = disposition.match(/filename="?([^";]+)"?/);
-				if (matches && matches[1]) {
-					filename = matches[1];
-				}
+				const asciiMatch = disposition.match(/filename="?([^";]+)"?/);
+				if (asciiMatch && asciiMatch[1]) filename = asciiMatch[1];
 			}
 		}
 		if (!filename) {
-			const dotIndex = currentFile.name.lastIndexOf('.');
-			const originalName = dotIndex !== -1 ? currentFile.name.substring(0, dotIndex) : currentFile.name;
-			filename = `${originalName}_edited.${targetFormat}`;
+			const dotIndex = state.currentFile.name.lastIndexOf('.');
+			const stem = dotIndex !== -1
+				? state.currentFile.name.substring(0, dotIndex)
+				: state.currentFile.name;
+			filename = `${stem}_edited.${targetFormat}`;
 		}
 
 		const blob = await response.blob();
-		const downloadUrl = window.URL.createObjectURL(blob);
-		const a = document.createElement('a');
-		a.href = downloadUrl;
-		a.download = filename;
-		document.body.appendChild(a);
-		a.click();
-		document.body.removeChild(a);
-		window.URL.revokeObjectURL(downloadUrl);
+		const downloadUrl = URL.createObjectURL(blob);
+		const anchor = document.createElement('a');
+		anchor.href = downloadUrl;
+		anchor.download = filename;
+		document.body.appendChild(anchor);
+		anchor.click();
+		document.body.removeChild(anchor);
+		URL.revokeObjectURL(downloadUrl);
 		showToast(`✓ Đã xuất file: ${filename}`);
 	} catch (error) {
-		console.error('Lỗi khi tải file:', error);
-		alert(`Có lỗi xảy ra trong quá trình xuất ảnh: ${error.message || 'Vui lòng thử lại!'}`);
+		console.error('Lỗi xuất ảnh:', error);
+		showToast(`❌ ${error.message || 'Có lỗi khi xuất ảnh.'}`);
 	} finally {
-		triggerBtn.disabled = false;
-		triggerBtn.textContent = originalBtnText;
+		setButtonBusy(triggerBtn, false);
 	}
 }
 
-// --- 9. QUẢN LÝ LỊCH SỬ PHIÊN LÀM VIỆC (MODAL & RESTORE) ---
-let cachedSessions = [];
+// --- 5. QUẢN LÝ PHIÊN LÀM VIỆC --------------------------------------------
 
-function openModal() {
-	if (sessionsModal) {
-		sessionsModal.classList.add('active');
-		fetchAndRenderSessions();
-	}
-}
-
-function closeModal() {
-	if (sessionsModal) {
-		sessionsModal.classList.remove('active');
-	}
-}
-
-function escapeHtml(str) {
-	if (!str) return '';
-	return String(str)
+function escapeHtml(value) {
+	if (value === null || value === undefined) return '';
+	return String(value)
 		.replace(/&/g, '&amp;')
 		.replace(/</g, '&lt;')
 		.replace(/>/g, '&gt;')
@@ -248,393 +558,503 @@ function escapeHtml(str) {
 		.replace(/'/g, '&#039;');
 }
 
+function openModal() {
+	if (!sessionsModal) return;
+	sessionsModal.classList.add('active');
+	document.body.classList.add('modal-open');
+	fetchAndRenderSessions();
+	if (closeModalBtn) closeModalBtn.focus();
+}
+
+function closeModal() {
+	if (!sessionsModal) return;
+	sessionsModal.classList.remove('active');
+	document.body.classList.remove('modal-open');
+}
+
 async function fetchAndRenderSessions() {
 	if (!sessionsList) return;
-	sessionsList.innerHTML = '<div style="text-align: center; padding: 20px; color: var(--text-soft);">Đang tải danh sách phiên...</div>';
+	sessionsList.innerHTML = '<div class="sessions-empty"><p>Đang tải danh sách phiên...</p></div>';
 
 	try {
 		const response = await fetch('/api/sessions');
-		if (!response.ok) throw new Error('Không thể tải danh sách phiên!');
+		if (!response.ok) throw new Error('Không thể tải danh sách phiên.');
 		const data = await response.json();
-		cachedSessions = data.sessions || [];
+		state.cachedSessions = data.sessions || [];
 
-		if (sessionCountBadge) {
-			sessionCountBadge.textContent = cachedSessions.length;
-		}
+		if (sessionCountBadge) sessionCountBadge.textContent = state.cachedSessions.length;
 
-		if (cachedSessions.length === 0) {
+		if (state.cachedSessions.length === 0) {
 			sessionsList.innerHTML = `
 				<div class="sessions-empty">
 					<span class="sessions-empty-icon">📂</span>
 					<p>Chưa có phiên làm việc nào được lưu.</p>
-					<small style="color: var(--text-soft);">Bấm nút <strong>Save</strong> để lưu phiên chỉnh sửa hiện tại.</small>
-				</div>
-			`;
+					<small>Bấm nút <strong>Lưu phiên</strong> để lưu phiên chỉnh sửa hiện tại.</small>
+				</div>`;
 			return;
 		}
 
-		sessionsList.innerHTML = cachedSessions.map((session) => {
-			const safeFilename = escapeHtml(session.filename);
-			const safeDate = escapeHtml(session.created_at_display || session.created_at);
-			const safeId = escapeHtml(session.id);
-			return `
-				<div class="session-item" id="session-card-${safeId}">
-					<img class="session-thumb" src="/api/sessions/${safeId}/thumbnail" alt="thumbnail" loading="lazy" />
-					<div class="session-info">
-						<div class="session-filename" title="${safeFilename}">${safeFilename}</div>
-						<div class="session-date">${safeDate}</div>
-						<div class="session-badges">
-							<span class="param-badge">Zoom: ${session.zoom}%</span>
-							<span class="param-badge">Rotate: ${session.rotate}°</span>
-							<span class="param-badge">Crop: ${session.crop}%</span>
+		sessionsList.innerHTML = state.cachedSessions
+			.map((session) => {
+				const safeFilename = escapeHtml(session.filename || 'Ảnh không tên');
+				const safeDate = escapeHtml(session.created_at_display || session.created_at || '');
+				const safeId = escapeHtml(session.id);
+				return `
+					<div class="session-item" id="session-card-${safeId}">
+						<img class="session-thumb" src="/api/sessions/${safeId}/thumbnail" alt="Thumbnail phiên ${safeFilename}" loading="lazy" />
+						<div class="session-info">
+							<div class="session-filename" title="${safeFilename}">${safeFilename}</div>
+							<div class="session-date">${safeDate}</div>
+							<div class="session-badges">
+								<span class="param-badge">Zoom: ${escapeHtml(session.zoom)}%</span>
+								<span class="param-badge">Rotate: ${escapeHtml(session.rotate)}°</span>
+								<span class="param-badge">Crop: ${escapeHtml(session.crop)}%</span>
+							</div>
 						</div>
-					</div>
-					<div class="session-actions">
-						<button class="session-btn session-load-btn" onclick="restoreSession('${safeId}')">Load</button>
-						<button class="session-btn session-delete-btn" onclick="deleteSession('${safeId}')">Delete</button>
-					</div>
-				</div>
-			`;
-		}).join('');
+						<div class="session-actions">
+							<button type="button" class="session-btn session-load-btn" onclick="restoreSession('${safeId}')">Load</button>
+							<button type="button" class="session-btn session-delete-btn" onclick="deleteSession('${safeId}')">Delete</button>
+						</div>
+					</div>`;
+			})
+			.join('');
 	} catch (error) {
-		console.error('Lỗi khi tải danh sách phiên:', error);
-		sessionsList.innerHTML = '<div style="color: #ef4444; text-align: center; padding: 20px;">Lỗi khi tải danh sách phiên làm việc!</div>';
+		console.error('Lỗi tải sessions:', error);
+		sessionsList.innerHTML =
+			'<div class="sessions-empty" style="color:#be123c;"><p>Không thể tải danh sách phiên làm việc.</p></div>';
 	}
 }
 
 async function restoreSession(sessionId) {
-	const session = cachedSessions.find((s) => s.id === sessionId);
+	const session = state.cachedSessions.find((item) => item.id === sessionId);
 	if (!session) return;
 
 	try {
 		showToast('Đang khôi phục phiên làm việc...');
 		const response = await fetch(`/api/sessions/${sessionId}/original`);
-		if (!response.ok) throw new Error('Không thể tải ảnh gốc của phiên!');
+		if (!response.ok) throw new Error('Không thể tải ảnh gốc của phiên.');
 
 		const blob = await response.blob();
-		const restoredFile = new File([blob], session.filename, { type: blob.type || 'image/png' });
-		currentFile = restoredFile;
+		const restoredFile = new File([blob], session.filename || 'restored-image.png', {
+			type: blob.type || 'image/png',
+		});
 
-		// Khôi phục giá trị các thanh trượt
-		zoomSlider.value = session.zoom;
-		zoomValue.textContent = `${session.zoom}%`;
+		state.currentFile = restoredFile;
+		resetAnalysisUI();
 
-		rotateSlider.value = session.rotate;
-		rotateValue.textContent = `${session.rotate}°`;
+		if (zoomSlider) zoomSlider.value = session.zoom;
+		if (zoomValue) zoomValue.textContent = `${session.zoom}%`;
 
-		cropSlider.value = session.crop;
-		cropValue.textContent = `${session.crop}%`;
+		if (rotateSlider) rotateSlider.value = session.rotate;
+		if (rotateValue) rotateValue.textContent = `${session.rotate}°`;
 
-		// Hiển thị Before Preview nhanh bằng URL.createObjectURL
-		const objectUrl = URL.createObjectURL(restoredFile);
-		beforePreview.innerHTML = `<img src="${objectUrl}" style="max-width: 100%; max-height: 100%; border-radius: 8px;">`;
-		afterPreview.innerHTML = '';
-		sendToBackend();
+		if (cropSlider) cropSlider.value = session.crop;
+		if (cropValue) cropValue.textContent = `${session.crop}%`;
 
-		// Xóa giá trị input file để có thể chọn lại file cùng tên nếu muốn
+		refreshAllRangeFills();
+
+		if (sourceMeta) {
+			sourceMeta.textContent = `${restoredFile.name} · ${formatBytes(restoredFile.size)}`;
+		}
+
+		const reader = new FileReader();
+		reader.onload = (event) => {
+			setBeforeImage(event.target.result);
+			afterPreview.innerHTML = AFTER_EMPTY_HTML;
+			afterPreview.classList.add('empty');
+			sendToBackend();
+		};
+		reader.readAsDataURL(restoredFile);
+
 		if (mediaInput) mediaInput.value = '';
-
 		closeModal();
 		showToast(`✓ Đã khôi phục phiên: ${session.filename}`);
 	} catch (error) {
-		console.error('Lỗi khi khôi phục phiên:', error);
-		alert(`Có lỗi xảy ra khi khôi phục phiên: ${error.message || 'Vui lòng thử lại!'}`);
+		console.error('Lỗi khôi phục phiên:', error);
+		showToast(`❌ ${error.message || 'Không thể khôi phục phiên.'}`);
 	}
 }
 
 async function deleteSession(sessionId) {
-	if (!confirm('Bạn có chắc chắn muốn xóa phiên làm việc này khỏi máy chủ?')) {
-		return;
-	}
+	if (!window.confirm('Bạn có chắc chắn muốn xóa phiên làm việc này khỏi máy chủ?')) return;
 
 	try {
-		const response = await fetch(`/api/sessions/${sessionId}`, {
-			method: 'DELETE',
-		});
-		if (!response.ok) throw new Error('Không thể xóa phiên làm việc!');
-
+		const response = await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+		if (!response.ok) throw new Error('Không thể xóa phiên làm việc.');
 		showToast('Đã xóa phiên làm việc.');
 		fetchAndRenderSessions();
 	} catch (error) {
-		console.error('Lỗi khi xóa phiên:', error);
-		alert('Có lỗi xảy ra khi xóa phiên làm việc!');
+		console.error('Lỗi xóa phiên:', error);
+		showToast(`❌ ${error.message || 'Có lỗi khi xóa phiên.'}`);
 	}
 }
 
-// Đưa hàm vào window scope để các nút onclick trong HTML luôn gọi được
 window.restoreSession = restoreSession;
 window.deleteSession = deleteSession;
 
-// Gắn sự kiện giao diện
-if (saveButton) {
-	saveButton.addEventListener('click', saveSession);
-}
-
-if (historyButton) {
-	historyButton.addEventListener('click', openModal);
-}
-
-if (closeModalBtn) {
-	closeModalBtn.addEventListener('click', closeModal);
-}
-
+if (saveButton) saveButton.addEventListener('click', saveSession);
+if (historyButton) historyButton.addEventListener('click', openModal);
+if (closeModalBtn) closeModalBtn.addEventListener('click', closeModal);
 if (sessionsModal) {
-	sessionsModal.addEventListener('click', (e) => {
-		if (e.target === sessionsModal) {
-			closeModal();
-		}
+	sessionsModal.addEventListener('click', (event) => {
+		if (event.target === sessionsModal) closeModal();
 	});
 }
-
 if (exportButton) {
 	exportButton.addEventListener('click', () => {
 		const format = exportFormat ? exportFormat.value : 'jpg';
-		downloadProcessedImage(format, exportButton, 'Exporting...');
+		downloadProcessedImage(format, exportButton);
 	});
 }
 
+// --- 6. WATERSHED — THAM SỐ & ĐIỀU KHIỂN ----------------------------------
 
+const METHOD_HINTS = {
+	otsu: 'Otsu tự động tìm ngưỡng tối ưu cho ảnh nền sáng, vật thể tối.',
+	adaptive: 'Phù hợp ảnh chiếu sáng không đều — ngưỡng được tính theo từng vùng 11×11.',
+	triangle: 'Tốt cho histogram lệch, ảnh có ít vật thể trên nền lớn.',
+	manual: 'Dùng giá trị ngưỡng cố định bên dưới. Kéo slider để tinh chỉnh.',
+};
 
+function syncMethodUI() {
+	if (!wsMethodSelect) return;
+	const method = wsMethodSelect.value || 'otsu';
+	const isManual = method === 'manual';
 
+	if (wsMethodHint) {
+		wsMethodHint.textContent = METHOD_HINTS[method] || METHOD_HINTS.otsu;
+	}
+	if (wsThresholdItem) {
+		wsThresholdItem.classList.toggle('is-muted', !isManual);
+	}
+	if (wsThresholdSlider) {
+		wsThresholdSlider.disabled = !isManual;
+		if (!isManual) updateRangeFill(wsThresholdSlider);
+	}
+}
 
-// ===========================================================================
-// --- PHÂN VÙNG 10: ĐẾM HẠT & PHÂN ĐOẠN WATERSHED (PARTICLE COUNTING) ---
-// ===========================================================================
-//
-// Nguyên tắc: JS chỉ thu thập tham số từ UI và gọi API Python.
-// Toàn bộ logic xử lý ảnh, Watershed, Distance Transform, đo lường
-// hình thái → thực hiện hoàn toàn ở backend (app.py, Phân vùng 5).
-// ===========================================================================
-
-// --- 10.1. KẾT NỐI CÁC PHẦN TỬ GIAO DIỆN PARTICLE COUNTING ---
-const btnRunWatershed   = document.getElementById('btnRunWatershed');
-const btnResetWatershed = document.getElementById('btnResetWatershed');
-const btnExportDataCsv  = document.getElementById('btnExportDataCsv');
-
-const wsMethodSelect    = document.getElementById('wsMethodSelect');
-const wsThresholdSlider = document.getElementById('wsThresholdSlider');
-const wsThresholdVal    = document.getElementById('wsThresholdVal');
-const wsDistanceSlider  = document.getElementById('wsDistanceSlider');
-const wsDistanceVal     = document.getElementById('wsDistanceVal');
-const wsMinAreaSlider   = document.getElementById('wsMinAreaSlider');
-const wsMinAreaVal      = document.getElementById('wsMinAreaVal');
-
-const chkShowBoundary   = document.getElementById('chkShowBoundary');
-const chkShowCentroid   = document.getElementById('chkShowCentroid');
-const chkShowId         = document.getElementById('chkShowId');
-const chkColorMap       = document.getElementById('chkColorMap');
-
-const metricTotalCount  = document.getElementById('metricTotalCount');
-const metricAvgArea     = document.getElementById('metricAvgArea');
-const metricCoverage    = document.getElementById('metricCoverage');
-const metricCircularity = document.getElementById('metricCircularity');
-
-const particleTableBody = document.getElementById('particleTableBody');
-const particleDataCount = document.getElementById('particleDataCount');
-
-let lastParticleFile   = null;
-let lastParticleParams = null;
-let particleAbortCtrl  = null;
-
-// --- 10.2. ĐẶT LẠI GIÁ TRỊ MẶC ĐỊNH (RESET WATERSHED) ---
 function resetWatershedParams() {
-	if (wsMethodSelect)    wsMethodSelect.value    = 'otsu';
-	if (wsThresholdSlider) { wsThresholdSlider.value = 128;  document.getElementById('wsThresholdVal').textContent = '128'; }
-	if (wsDistanceSlider)  { wsDistanceSlider.value  = 0.45; document.getElementById('wsDistanceVal').textContent  = '0.45'; }
-	if (wsMinAreaSlider)   { wsMinAreaSlider.value   = 20;   document.getElementById('wsMinAreaVal').textContent   = '20 px\u00B2'; }
-	if (chkShowBoundary)   chkShowBoundary.checked  = true;
-	if (chkShowCentroid)   chkShowCentroid.checked  = true;
-	if (chkShowId)         chkShowId.checked        = true;
-	if (chkColorMap)       chkColorMap.checked      = false;
-	showToast('\uD83D\uDD04 Đã đặt lại tham số Watershed về mặc định.');
+	if (wsMethodSelect) wsMethodSelect.value = 'otsu';
+	if (wsThresholdSlider) wsThresholdSlider.value = '128';
+	if (wsThresholdVal) wsThresholdVal.textContent = '128';
+	if (wsDistanceSlider) wsDistanceSlider.value = '0.45';
+	if (wsDistanceVal) wsDistanceVal.textContent = '0.45';
+	if (wsMinAreaSlider) wsMinAreaSlider.value = '20';
+	if (wsMinAreaVal) wsMinAreaVal.textContent = '20 px²';
+	if (chkShowBoundary) chkShowBoundary.checked = true;
+	if (chkShowCentroid) chkShowCentroid.checked = true;
+	if (chkShowId) chkShowId.checked = true;
+	if (chkColorMap) chkColorMap.checked = false;
+	syncMethodUI();
+	refreshAllRangeFills();
+	showToast('↺ Đã đặt lại tham số Watershed về mặc định.');
 }
 
-// --- 10.3. CẬP NHẬT TRẠNG THÁI NÚT KHI ĐANG PHÂN TÍCH ---
+function collectParticleParams() {
+	const method = wsMethodSelect ? wsMethodSelect.value : 'otsu';
+	return {
+		method,
+		threshold: wsThresholdSlider ? wsThresholdSlider.value : '128',
+		distance_factor: wsDistanceSlider ? wsDistanceSlider.value : '0.45',
+		min_area: wsMinAreaSlider ? wsMinAreaSlider.value : '20',
+		show_boundary: chkShowBoundary ? chkShowBoundary.checked : true,
+		show_centroid: chkShowCentroid ? chkShowCentroid.checked : true,
+		show_id: chkShowId ? chkShowId.checked : true,
+		color_map: chkColorMap ? chkColorMap.checked : false,
+	};
+}
+
+function updateAfterViewButtons(activeView) {
+	document.querySelectorAll('[data-after-view]').forEach((button) => {
+		const isActive = button.dataset.afterView === activeView;
+		button.classList.toggle('is-active', isActive);
+		button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+	});
+}
+
+function showAfterView(view) {
+	if (!state.watershedImages) return;
+	const base64 = view === 'distance'
+		? state.watershedImages.distance
+		: state.watershedImages.result;
+	if (!base64) return;
+
+	state.activeAfterView = view;
+	setAfterImage(`data:image/jpeg;base64,${base64}`, {
+		alt: view === 'distance' ? 'Bản đồ Distance Transform' : 'Kết quả phân đoạn Watershed',
+	});
+	updateAfterViewButtons(view);
+	if (distanceLegend) distanceLegend.hidden = view !== 'distance';
+	if (afterViewLabel) {
+		afterViewLabel.textContent = view === 'distance'
+			? 'Distance Transform · Bản đồ khoảng cách'
+			: 'Watershed · Viền phân đoạn & #ID';
+	}
+	setAfterIndicator('ready', view === 'distance' ? 'Distance' : 'Watershed');
+}
+
 function setWatershedRunning(isRunning) {
-	if (!btnRunWatershed) return;
+	state.isAnalyzing = isRunning;
+	setButtonBusy(btnRunWatershed, isRunning, 'Đang phân tích...');
+	if (btnResetWatershed) btnResetWatershed.disabled = isRunning;
+
 	if (isRunning) {
-		btnRunWatershed.disabled = true;
-		btnRunWatershed.innerHTML =
-			'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="animation:wspin 1s linear infinite"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4" stroke-dashoffset="10"/></svg>' +
-			'<span>Đang phân tích Watershed...</span>';
+		if (afterPreview) afterPreview.classList.add('is-processing');
+		setWorkspaceStatus('running', 'Đang phân tích');
+		setPipelineStatus('running', 'Đang xử lý...');
+		setAnalysisStatus('running', 'Đang phân tích...');
+		setAfterIndicator('busy', 'Analyzing');
+		setResultChip('running', 'Đang chạy');
 	} else {
-		btnRunWatershed.disabled = false;
-		btnRunWatershed.innerHTML =
-			'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>' +
-			'<span>Thực hiện đếm hạt (Watershed)</span>';
+		if (afterPreview) afterPreview.classList.remove('is-processing');
 	}
 }
 
-// --- 10.4. HIỂN THỊ ẢNH KẾT QUẢ WATERSHED VÀO PANEL "AFTER" ---
-function renderWatershedImages(resultB64) {
-	if (!afterPreview || !resultB64) return;
-	var resultSrc = 'data:image/jpeg;base64,' + resultB64;
-	var imgEl = afterPreview.querySelector('img');
-	if (imgEl) {
-		imgEl.src = resultSrc;
-	} else {
-		afterPreview.classList.remove('empty');
-		afterPreview.innerHTML = '<img src="' + resultSrc + '" style="max-width:100%;max-height:100%;border-radius:8px;">';
-	}
-}
-
-// --- 10.5. HIỂN THỊ CÁC CHỈ SỐ TỔNG HỢP VÀO METRIC CARDS ---
 function renderMetricCards(data) {
-	if (metricTotalCount)  metricTotalCount.textContent  = data.total_count;
-	if (metricAvgArea)     metricAvgArea.textContent     = data.avg_area.toLocaleString('vi-VN') + ' px\u00B2';
-	if (metricCoverage)    metricCoverage.textContent    = data.coverage_pct + '%';
-	if (metricCircularity) metricCircularity.textContent = data.avg_circularity.toFixed(3);
+	if (metricTotalCount) metricTotalCount.textContent = numberFormatter.format(data.total_count || 0);
+	if (metricAvgArea) metricAvgArea.textContent = numberFormatter.format(data.avg_area || 0);
+	if (metricCoverage) {
+		metricCoverage.textContent = `${numberFormatter.format(data.coverage_pct || 0)}%`;
+	}
+	if (metricCircularity) {
+		const value = Number(data.avg_circularity || 0);
+		metricCircularity.textContent = value.toFixed(3);
+	}
 }
 
-// --- 10.6. RENDER BẢNG DỮ LIỆU TỪNG HẠT (NHẬN DỮ LIỆU TỪ PYTHON) ---
 function renderParticleTable(particles) {
 	if (!particleTableBody) return;
+
 	if (!particles || particles.length === 0) {
-		particleTableBody.innerHTML =
-			'<tr class="table-placeholder-row"><td colspan="7">' +
-			'<div class="table-empty-box">' +
-			'<span class="empty-table-icon">\u26A0\uFE0F</span>' +
-			'<div class="empty-table-text">Không phát hiện được hạt nào</div>' +
-			'<div class="empty-table-sub">Hãy thử giảm <strong>Min Area</strong>, thay đổi <strong>Phương pháp phân ngưỡng</strong> hoặc giảm <strong>Distance Factor</strong>.</div>' +
-			'</div></td></tr>';
+		particleTableBody.innerHTML = `
+			<tr class="table-placeholder-row">
+				<td colspan="7">
+					<div class="table-empty-box">
+						<span class="empty-table-icon">⚠️</span>
+						<div class="empty-table-text">Không phát hiện được hạt nào</div>
+						<div class="empty-table-sub">Hãy thử giảm <strong>Min Area</strong>, đổi <strong>phương pháp phân ngưỡng</strong> hoặc giảm <strong>Distance Factor</strong>.</div>
+					</div>
+				</td>
+			</tr>`;
 		if (particleDataCount) particleDataCount.textContent = '0 kết quả';
 		return;
 	}
-	particleTableBody.innerHTML = particles.map(function(p) {
-		return '<tr>' +
-			'<td><strong>#' + p.id + '</strong></td>' +
-			'<td>' + p.cx + '</td>' +
-			'<td>' + p.cy + '</td>' +
-			'<td>' + p.area_px.toLocaleString('vi-VN') + '</td>' +
-			'<td>' + p.perimeter_px + '</td>' +
-			'<td>' + p.equiv_diameter_px + '</td>' +
-			'<td>' + p.circularity.toFixed(3) + '</td>' +
-			'</tr>';
-	}).join('');
-	if (particleDataCount) particleDataCount.textContent = particles.length + ' hạt / tế bào';
+
+	particleTableBody.innerHTML = particles
+		.map((particle) => `
+			<tr>
+				<td>#${particle.id}</td>
+				<td>${numberFormatter.format(particle.cx)}</td>
+				<td>${numberFormatter.format(particle.cy)}</td>
+				<td>${numberFormatter.format(particle.area_px)}</td>
+				<td>${numberFormatter.format(particle.perimeter_px)}</td>
+				<td>${numberFormatter.format(particle.equiv_diameter_px)}</td>
+				<td>${Number(particle.circularity || 0).toFixed(3)}</td>
+			</tr>`)
+		.join('');
+
+	if (particleDataCount) {
+		particleDataCount.textContent = `${particles.length} hạt / tế bào`;
+	}
 }
 
-// --- 10.7. HÀM CHÍNH: GỌI API /api/particle-count (MỌI XỬ LÝ Ở PYTHON) ---
 async function runWatershed() {
-	if (!currentFile) {
-		showToast('\u26A0\uFE0F Vui lòng tải ảnh lên trước khi thực hiện đếm hạt!');
+	if (!state.currentFile) {
+		showToast('⚠️ Vui lòng tải ảnh lên trước khi thực hiện đếm hạt.');
 		return;
 	}
-	if (particleAbortCtrl) particleAbortCtrl.abort();
-	particleAbortCtrl = new AbortController();
+
+	if (state.particleAbort) state.particleAbort.abort();
+	const controller = new AbortController();
+	state.particleAbort = controller;
+
+	const fileAtRequest = state.currentFile;
+	const params = collectParticleParams();
+
+	const formData = new FormData();
+	formData.append('file', fileAtRequest);
+	formData.append('method', params.method);
+	formData.append('threshold', params.threshold);
+	formData.append('distance_factor', params.distance_factor);
+	formData.append('min_area', params.min_area);
+	formData.append('show_boundary', params.show_boundary ? 'true' : 'false');
+	formData.append('show_centroid', params.show_centroid ? 'true' : 'false');
+	formData.append('show_id', params.show_id ? 'true' : 'false');
+	formData.append('color_map', params.color_map ? 'true' : 'false');
+
 	setWatershedRunning(true);
 
-	var formData = new FormData();
-	formData.append('file',            currentFile);
-	formData.append('method',          wsMethodSelect    ? wsMethodSelect.value    : 'otsu');
-	formData.append('threshold',       wsThresholdSlider ? wsThresholdSlider.value : '128');
-	formData.append('distance_factor', wsDistanceSlider  ? wsDistanceSlider.value  : '0.45');
-	formData.append('min_area',        wsMinAreaSlider   ? wsMinAreaSlider.value   : '20');
-	formData.append('show_boundary',   (chkShowBoundary && chkShowBoundary.checked)  ? 'true' : 'false');
-	formData.append('show_centroid',   (chkShowCentroid && chkShowCentroid.checked)  ? 'true' : 'false');
-	formData.append('show_id',         (chkShowId       && chkShowId.checked)        ? 'true' : 'false');
-	formData.append('color_map',       (chkColorMap     && chkColorMap.checked)      ? 'true' : 'false');
-
-	lastParticleFile   = currentFile;
-	lastParticleParams = {
-		method         : wsMethodSelect    ? wsMethodSelect.value    : 'otsu',
-		threshold      : wsThresholdSlider ? wsThresholdSlider.value : '128',
-		distance_factor: wsDistanceSlider  ? wsDistanceSlider.value  : '0.45',
-		min_area       : wsMinAreaSlider   ? wsMinAreaSlider.value   : '20',
-	};
-
 	try {
-		var response = await fetch('/api/particle-count', {
+		const response = await fetch('/api/particle-count', {
 			method: 'POST',
-			body  : formData,
-			signal: particleAbortCtrl.signal,
+			body: formData,
+			signal: controller.signal,
 		});
-		if (!response.ok) {
-			var errMsg = 'L\u1ED7i server (' + response.status + ')';
-			try { var errJson = await response.json(); errMsg = errJson.detail || errMsg; } catch (_) {}
-			throw new Error(errMsg);
-		}
-		var data = await response.json();
-		if (data.status !== 'success') throw new Error('Phân tích thất bại. Vui lòng thử lại!');
 
-		renderWatershedImages(data.result_image_b64);
+		if (!response.ok) {
+			let message = `Lỗi server (${response.status})`;
+			try {
+				const errorJson = await response.json();
+				message = errorJson.detail || message;
+			} catch (_) {
+				// Giữ message mặc định khi response không phải JSON
+			}
+			throw new Error(message);
+		}
+
+		const data = await response.json();
+		if (data.status !== 'success') {
+			throw new Error('Phân tích thất bại. Vui lòng thử lại.');
+		}
+		if (state.particleAbort !== controller) return;
+
+		state.watershedImages = {
+			result: data.result_image_b64,
+			distance: data.dist_image_b64,
+		};
+		state.particleFile = fileAtRequest;
+		state.particleParams = {
+			method: params.method,
+			threshold: params.threshold,
+			distance_factor: params.distance_factor,
+			min_area: params.min_area,
+		};
+
+		if (afterViewToggle) afterViewToggle.hidden = false;
+		showAfterView('result');
+
 		renderMetricCards(data);
 		renderParticleTable(data.particles);
-		showToast('\u2713 Phát hiện ' + data.total_count + ' hạt/tế bào | Coverage: ' + data.coverage_pct + '%');
+
+		if (analysisMeta) {
+			const methodLabel = (data.method || params.method || 'otsu').toUpperCase();
+			analysisMeta.textContent =
+				`${data.image_width}×${data.image_height}px · ${data.processing_ms} ms · ${methodLabel}`;
+		}
+
+		setResultChip('success', 'Hoàn tất');
+		setAnalysisStatus('success', `Đã phân tích ${data.total_count} hạt`);
+		setPipelineStatus('success', `Hoàn tất · ${data.total_count} hạt`);
+		setWorkspaceStatus('ready', 'Sẵn sàng');
+
+		showToast(
+			`✓ Phát hiện ${data.total_count} hạt/tế bào | Coverage: ${data.coverage_pct}%`
+		);
 	} catch (error) {
 		if (error.name === 'AbortError') return;
-		console.error('Lỗi khi phân tích Watershed:', error);
-		showToast('\u274C Lỗi: ' + (error.message || 'Không thể kết nối backend!'));
+		if (state.particleAbort !== controller) return;
+		console.error('Lỗi phân tích Watershed:', error);
+		setResultChip('error', 'Lỗi');
+		setAnalysisStatus('error', 'Phân tích thất bại');
+		setPipelineStatus('error', 'Lỗi xử lý');
+		setAfterIndicator('error', 'Failed');
+		setWorkspaceStatus('error', 'Lỗi phân tích');
+		showToast(`❌ ${error.message || 'Không thể kết nối backend.'}`);
 	} finally {
-		setWatershedRunning(false);
+		if (state.particleAbort === controller) {
+			state.particleAbort = null;
+			setWatershedRunning(false);
+		}
 	}
 }
 
-// --- 10.8. XUẤT CSV — GỌI API /api/particle-export-csv (PYTHON XỬ LÝ VÀ STREAM CSV) ---
 async function exportParticleCSV() {
-	if (!lastParticleFile) {
-		showToast('\u26A0\uFE0F Chưa có kết quả đếm hạt. Hãy chạy phân tích trước!');
+	if (!state.particleFile || !state.particleParams) {
+		showToast('⚠️ Chưa có kết quả đếm hạt. Hãy chạy phân tích trước.');
 		return;
 	}
-	var btn = btnExportDataCsv;
-	var originalHtml = btn ? btn.innerHTML : '';
-	if (btn) { btn.disabled = true; btn.innerHTML = '<span>Đang xuất...</span>'; }
 
-	var formData = new FormData();
-	formData.append('file',            lastParticleFile);
-	formData.append('method',          lastParticleParams.method);
-	formData.append('threshold',       lastParticleParams.threshold);
-	formData.append('distance_factor', lastParticleParams.distance_factor);
-	formData.append('min_area',        lastParticleParams.min_area);
+	setButtonBusy(btnExportDataCsv, true, 'Đang xuất...');
+	const formData = new FormData();
+	formData.append('file', state.particleFile);
+	formData.append('method', state.particleParams.method);
+	formData.append('threshold', state.particleParams.threshold);
+	formData.append('distance_factor', state.particleParams.distance_factor);
+	formData.append('min_area', state.particleParams.min_area);
 
 	try {
-		var response = await fetch('/api/particle-export-csv', { method: 'POST', body: formData });
-		if (!response.ok) throw new Error('L\u1ED7i server (' + response.status + ')');
-		var blob        = await response.blob();
-		var downloadUrl = window.URL.createObjectURL(blob);
-		var a = document.createElement('a');
-		a.href = downloadUrl;
-		a.download = 'particle_measurements.csv';
-		document.body.appendChild(a);
-		a.click();
-		document.body.removeChild(a);
-		window.URL.revokeObjectURL(downloadUrl);
-		showToast('\u2713 Đã xuất file CSV thành công!');
+		const response = await fetch('/api/particle-export-csv', {
+			method: 'POST',
+			body: formData,
+		});
+		if (!response.ok) throw new Error(`Lỗi server (${response.status}).`);
+
+		const blob = await response.blob();
+		const downloadUrl = URL.createObjectURL(blob);
+		const anchor = document.createElement('a');
+		anchor.href = downloadUrl;
+		anchor.download = 'particle_measurements.csv';
+		document.body.appendChild(anchor);
+		anchor.click();
+		document.body.removeChild(anchor);
+		URL.revokeObjectURL(downloadUrl);
+		showToast('✓ Đã xuất file CSV thành công.');
 	} catch (error) {
-		console.error('Lỗi khi xuất CSV:', error);
-		showToast('\u274C Không thể xuất CSV: ' + error.message);
+		console.error('Lỗi xuất CSV:', error);
+		showToast(`❌ Không thể xuất CSV: ${error.message || 'Vui lòng thử lại.'}`);
 	} finally {
-		if (btn) { btn.disabled = false; btn.innerHTML = originalHtml; }
+		setButtonBusy(btnExportDataCsv, false);
 	}
 }
 
-// --- 10.9. GẮN SỰ KIỆN ---
-if (btnRunWatershed)   btnRunWatershed.addEventListener('click',   runWatershed);
+// --- 7. GẮN SỰ KIỆN WATERSHED --------------------------------------------
+
+if (btnRunWatershed) btnRunWatershed.addEventListener('click', runWatershed);
 if (btnResetWatershed) btnResetWatershed.addEventListener('click', resetWatershedParams);
-if (btnExportDataCsv)  btnExportDataCsv.addEventListener('click',  exportParticleCSV);
+if (btnExportDataCsv) btnExportDataCsv.addEventListener('click', exportParticleCSV);
 
-// Cập nhật giá trị hiển thị tương tác thời gian thực khi kéo thanh trượt
-if (wsThresholdSlider && wsThresholdVal) {
-	wsThresholdSlider.addEventListener('input', function(e) {
-		wsThresholdVal.textContent = e.target.value;
+if (wsMethodSelect) {
+	wsMethodSelect.addEventListener('change', syncMethodUI);
+}
+
+if (wsThresholdSlider) {
+	wsThresholdSlider.addEventListener('input', (event) => {
+		if (wsThresholdVal) wsThresholdVal.textContent = event.target.value;
+		updateRangeFill(event.target);
 	});
 }
 
-if (wsDistanceSlider && wsDistanceVal) {
-	wsDistanceSlider.addEventListener('input', function(e) {
-		wsDistanceVal.textContent = e.target.value;
+if (wsDistanceSlider) {
+	wsDistanceSlider.addEventListener('input', (event) => {
+		if (wsDistanceVal) wsDistanceVal.textContent = event.target.value;
+		updateRangeFill(event.target);
 	});
 }
 
-if (wsMinAreaSlider && wsMinAreaVal) {
-	wsMinAreaSlider.addEventListener('input', function(e) {
-		wsMinAreaVal.textContent = e.target.value + ' px²';
+if (wsMinAreaSlider) {
+	wsMinAreaSlider.addEventListener('input', (event) => {
+		if (wsMinAreaVal) wsMinAreaVal.textContent = `${event.target.value} px²`;
+		updateRangeFill(event.target);
 	});
 }
 
-// Inject CSS animation spinner
-(function() {
-	var s = document.createElement('style');
-	s.textContent = '@keyframes wspin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}';
-	document.head.appendChild(s);
-})();
+if (afterViewToggle) {
+	afterViewToggle.addEventListener('click', (event) => {
+		const button = event.target.closest('[data-after-view]');
+		if (!button) return;
+		showAfterView(button.dataset.afterView);
+	});
+}
+
+// --- 8. PHÍM TẮT & KHỞI TẠO ----------------------------------------------
+
+document.addEventListener('keydown', (event) => {
+	// Ctrl/Cmd + Enter: chạy nhanh phân tích khi đang ở tab Đếm hạt
+	if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+		if (sessionsModal && sessionsModal.classList.contains('active')) return;
+		event.preventDefault();
+		if (tabParticle) tabParticle.checked = true;
+		runWatershed();
+		return;
+	}
+
+	// Escape: đóng modal
+	if (event.key === 'Escape' && sessionsModal && sessionsModal.classList.contains('active')) {
+		closeModal();
+	}
+});
+
+refreshAllRangeFills();
+syncMethodUI();
+resetAnalysisUI();
+setWorkspaceStatus('ready', 'Sẵn sàng');

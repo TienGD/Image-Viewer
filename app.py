@@ -14,7 +14,13 @@ import uuid
 import urllib.parse
 import unicodedata
 import re
+import base64
+import csv
+import io
+import time
+from array import array
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 
 app = FastAPI()
 
@@ -388,6 +394,54 @@ async def delete_session(session_id: str):
 
 
 # ---------------------------------------------------------------------------
+# HÀM TIỆN ÍCH 5.0: GIẢI MÃ & CHUẨN HÓA KÍCH THƯỚC ẢNH ĐẦU VÀO
+# ---------------------------------------------------------------------------
+def _decode_image_bytes(
+    image_bytes: bytes,
+    max_dim: int = 1600
+) -> np.ndarray:
+    """
+    Giải mã bytes ảnh thành ma trận BGR và giới hạn cạnh dài.
+
+    Việc giới hạn kích thước giúp:
+      - Distance Transform + Watershed chạy ổn định trên ảnh lớn.
+      - Base64 trả về không quá nặng, giao diện phản hồi nhanh.
+      - Giữ nguyên tỷ lệ khung hình (resize bằng INTER_AREA).
+    """
+    if not image_bytes:
+        raise ValueError("File ảnh rỗng. Vui lòng chọn ảnh khác.")
+
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if img_bgr is None:
+        raise ValueError("File ảnh không hợp lệ hoặc định dạng chưa được hỗ trợ.")
+
+    h, w = img_bgr.shape[:2]
+    long_side = max(h, w)
+    if max_dim and long_side > max_dim:
+        scale = float(max_dim) / float(long_side)
+        new_size = (max(1, int(round(w * scale))), max(1, int(round(h * scale))))
+        img_bgr = cv2.resize(img_bgr, new_size, interpolation=cv2.INTER_AREA)
+
+    return np.ascontiguousarray(img_bgr)
+
+
+def _to_grayscale(img_bgr: np.ndarray) -> np.ndarray:
+    """
+    Chuyển BGR → grayscale bằng công thức BT.601, cài đặt trực tiếp
+    bằng NumPy (không gọi cv2.cvtColor).
+
+        Y = 0.114·B + 0.587·G + 0.299·R
+    """
+    b = img_bgr[:, :, 0].astype(np.float32, copy=False)
+    g = img_bgr[:, :, 1].astype(np.float32, copy=False)
+    r = img_bgr[:, :, 2].astype(np.float32, copy=False)
+    return np.clip(
+        0.114 * b + 0.587 * g + 0.299 * r, 0.0, 255.0
+    ).astype(np.uint8)
+
+
+# ---------------------------------------------------------------------------
 # HÀM TIỆN ÍCH 5A: TIỀN XỬ LÝ & BINARIZATION (PHÂN NGƯỠNG NHỊ PHÂN)
 # ---------------------------------------------------------------------------
 def _binarize(
@@ -420,6 +474,7 @@ def _binarize(
     Trả về:
         binary: Ảnh nhị phân (0/255), VẬT THỂ = TRẮNG, NỀN = ĐEN.
     """
+    method = (method or "otsu").strip().lower()
     blurred = cv2.GaussianBlur(gray, (5, 5), sigmaX=1)
 
     if method == "otsu":
@@ -460,7 +515,7 @@ def _binarize(
     #   - Distance Transform tính khoảng cách từ pixel TRẮNG tới nền ĐEN.
     #     Nếu nền là trắng → "ngọn đồi" xuất hiện trên nền, không phải hạt.
     # Heuristic: nếu > 70% pixel là trắng → nền đang là trắng → đảo lại.
-    white_ratio = cv2.countNonZero(binary) / float(binary.size)
+    white_ratio = float(np.count_nonzero(binary)) / float(binary.size)
     if white_ratio > 0.70:
         binary = cv2.bitwise_not(binary)
 
@@ -478,6 +533,198 @@ def _morphological_clean(binary: np.ndarray) -> np.ndarray:
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     opening = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=2)
     return opening
+
+
+# ===========================================================================
+# 5C-1 — EUCLIDEAN DISTANCE TRANSFORM (TỰ CÀI ĐẶT TỪ ĐẦU)
+# ===========================================================================
+#
+# Mục tiêu: với mỗi pixel foreground, tính khoảng cách Euclid tới pixel
+# background gần nhất. Công thức:
+#
+#       D(x, y) = min_{b ∈ Background} sqrt((x - bx)² + (y - by)²)
+#
+# Không dùng cv2.distanceTransform. Thuật toán dưới đây dựa trên ý tưởng
+# "distance transform of sampled functions" của Felzenszwalb & Huttenlocher:
+# một phép EDT 2-D được tách thành hai phép EDT 1-D liên tiếp (separable).
+# ===========================================================================
+
+
+def _edt_1d_squared(f: np.ndarray) -> np.ndarray:
+    """
+    EDT 1-D chính xác trên miền bình phương khoảng cách.
+
+    Bài toán:
+        d(q) = min_p ( (q - p)² + f(p) )
+
+    Mỗi vị trí p được xem như một parabol:
+        y(q) = (q - p)² + f(p)
+
+    Đường bao dưới (lower envelope) của tất cả parabol chính là d(q).
+    Thuật toán duy trì:
+        v[k] — vị trí parabol đại diện trên envelope
+        z[k] — hoành độ giao điểm giữa parabol k-1 và parabol k
+
+    Mỗi parabol được đưa vào / loại khỏi envelope tối đa một lần,
+    nên độ phức tạp là O(n) thay vì O(n²) nếu duyệt mọi cặp (p, q).
+
+    Tham số:
+        f : mảng 1-D float, chi phí tại mỗi vị trí.
+
+    Trả về:
+        d : mảng 1-D float, giá trị bình phương khoảng cách nhỏ nhất.
+    """
+    n = int(f.size)
+    if n == 0:
+        return np.empty(0, dtype=np.float64)
+
+    d = np.empty(n, dtype=np.float64)
+    fl = f.astype(np.float64, copy=False).tolist()
+    v = [0] * n
+    z = [0.0] * (n + 1)
+
+    k = 0
+    v[0] = 0
+    z[0] = -np.inf
+    z[1] = np.inf
+
+    for q in range(1, n):
+        fq = fl[q]
+        q2 = q * q
+
+        # Hoành độ giao điểm giữa parabol mới (q) và parabol v[k].
+        s = (
+            (fq + q2) - (fl[v[k]] + v[k] * v[k])
+        ) / (2.0 * q - 2.0 * v[k])
+
+        # Nếu giao điểm nằm bên trái giao điểm cuối cùng thì parabol v[k]
+        # không còn nằm trên envelope → loại nó ra.
+        while s <= z[k]:
+            k -= 1
+            s = (
+                (fq + q2) - (fl[v[k]] + v[k] * v[k])
+            ) / (2.0 * q - 2.0 * v[k])
+
+        k += 1
+        v[k] = q
+        z[k] = s
+        z[k + 1] = np.inf
+
+    # Truy vấn envelope tại từng q.
+    k = 0
+    for q in range(n):
+        while z[k + 1] < q:
+            k += 1
+        dq = q - v[k]
+        d[q] = dq * dq + fl[v[k]]
+
+    return d
+
+
+def _euclidean_distance_transform(mask: np.ndarray) -> np.ndarray:
+    """
+    EDT 2-D chính xác bằng phương pháp separable (tự cài đặt).
+
+    Quy trình:
+        1. Chọn hướng: đặt số cột <= số hàng để vòng lặp Python ở pass 2
+           có ít lần lặp nhất.
+        2. Pass ngang (vectorized):
+           Với mỗi hàng, tìm khoảng cách bình phương tới background gần
+           nhất bằng hai lượt quét:
+               - maximum.accumulate cho vị trí background bên trái
+               - minimum.accumulate cho vị trí background bên phải
+           Không cần vòng lặp Python cho từng pixel.
+        3. Pass dọc:
+           Mỗi cột là một bài toán EDT 1-D tổng quát, giải bằng
+           lower-envelope parabol ở _edt_1d_squared.
+        4. Lấy căn bậc hai, gán background = 0.
+
+    Kết quả là khoảng cách Euclid chính xác (sai số chỉ do làm tròn
+    float), khác với cv2.distanceTransform(DIST_L2, mask=5) vốn dùng
+    xấp xỉ 5×5.
+
+    Tham số:
+        mask : mảng bool H×W, True = foreground.
+
+    Trả về:
+        dist : float32 H×W, khoảng cách tới background gần nhất.
+    """
+    fg = np.asarray(mask, dtype=bool)
+    if fg.ndim != 2:
+        raise ValueError("mask phải là mảng 2 chiều.")
+
+    # Không có foreground, hoặc foreground phủ kín ảnh → không có biên nền.
+    if fg.size == 0 or not fg.any() or not (~fg).any():
+        return np.zeros(fg.shape, dtype=np.float32)
+
+    transposed = fg.shape[1] > fg.shape[0]
+    work = fg.T if transposed else fg
+    _h, w = work.shape
+    inf = 1.0e20
+
+    # ------------------------------------------------------------------
+    # PASS 1 — khoảng cách ngang tới background gần nhất trên từng hàng
+    # ------------------------------------------------------------------
+    idx = np.arange(w, dtype=np.float64)
+    is_bg = ~work
+
+    # Vị trí background gần nhất bên trái (hoặc -1 nếu không có).
+    left = np.maximum.accumulate(
+        np.where(is_bg, idx, -1.0), axis=1
+    )
+    # Vị trí background gần nhất bên phải (hoặc w nếu không có).
+    right = np.minimum.accumulate(
+        np.where(is_bg, idx, float(w))[:, ::-1], axis=1
+    )[:, ::-1]
+
+    d_left = np.where(left >= 0.0, idx - left, inf)
+    d_right = np.where(right < w, right - idx, inf)
+    row_sq = np.minimum(d_left, d_right) ** 2
+
+    # ------------------------------------------------------------------
+    # PASS 2 — lower envelope dọc cho từng cột
+    # ------------------------------------------------------------------
+    col_sq = np.empty_like(row_sq)
+    for x in range(w):
+        col_sq[:, x] = _edt_1d_squared(row_sq[:, x])
+
+    dist = np.sqrt(col_sq)
+    if transposed:
+        dist = dist.T
+
+    # Background không có ý nghĩa khoảng cách → trả về 0.
+    dist[~fg] = 0.0
+    return dist.astype(np.float32, copy=False)
+
+
+def _dilate_cross(mask: np.ndarray, iterations: int = 1) -> np.ndarray:
+    """
+    Phép giãn nhị phân với phần tử cấu trúc chữ thập 3×3 (tự cài đặt).
+
+    Kernel tương đương cv2.getStructuringElement(MORPH_ELLIPSE, (3, 3)):
+        [[0, 1, 0],
+         [1, 1, 1],
+         [0, 1, 0]]
+
+    Mỗi vòng lặp mở rộng vùng foreground thêm 1 pixel theo 4 hướng.
+    Lặp `iterations` lần → bán kính Manhattan = iterations.
+
+    Tham số:
+        mask       : mảng bool H×W.
+        iterations : số lần giãn.
+
+    Trả về:
+        mảng bool H×W sau khi giãn.
+    """
+    out = np.asarray(mask, dtype=bool).copy()
+    for _ in range(max(0, int(iterations))):
+        prev = out
+        out = prev.copy()
+        out[1:, :] |= prev[:-1, :]
+        out[:-1, :] |= prev[1:, :]
+        out[:, 1:] |= prev[:, :-1]
+        out[:, :-1] |= prev[:, 1:]
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -499,33 +746,396 @@ def _distance_transform(
         cleaned_binary : Ảnh nhị phân sạch (0/255).
         distance_factor: Hệ số ngưỡng (0.1→0.9). Càng cao → càng ít tâm
                          → phân đoạn chặt hơn nhưng dễ bỏ sót hạt nhỏ.
+
+    Ghi chú thuật toán:
+        - EDT được cài đặt từ đầu bằng phương pháp separable
+          (xem _euclidean_distance_transform), không dùng
+          cv2.distanceTransform.
+        - Phép giãn sure_bg dùng _dilate_cross (NumPy), không dùng
+          cv2.dilate.
+        - Các phép trừ / ngưỡng đều vectorized bằng NumPy.
     """
-    # Distance Transform: DIST_L2 = khoảng cách Euclidean
-    dist_map_raw = cv2.distanceTransform(cleaned_binary, cv2.DIST_L2, 5)
+    foreground = cleaned_binary > 0
 
-    # Chuẩn hóa về [0, 1] để hiển thị và so sánh
-    dist_max = dist_map_raw.max()
+    # ------------------------------------------------------------------
+    # (1) EDT chính xác: khoảng cách Euclid từ mỗi pixel vật thể tới nền.
+    # ------------------------------------------------------------------
+    dist_raw = _euclidean_distance_transform(foreground)
+
+    # Chuẩn hóa về [0, 1] để hiển thị và so sánh.
+    dist_max = float(dist_raw.max()) if dist_raw.size else 0.0
     if dist_max > 0:
-        dist_map = dist_map_raw / dist_max
+        dist_map = (dist_raw / dist_max).astype(np.float32, copy=False)
     else:
-        dist_map = dist_map_raw.copy()
+        dist_map = dist_raw.copy()
 
-    # Threshold foreground bằng distance_factor × giá trị cực đại
-    _, sure_fg = cv2.threshold(
-        dist_map_raw,
-        distance_factor * dist_max,
-        255, cv2.THRESH_BINARY
+    # ------------------------------------------------------------------
+    # (2) Ngưỡng tâm hạt: giữ pixel có khoảng cách > factor × max.
+    #     Đây là các "hạt giống" (seeds) cho Watershed.
+    # ------------------------------------------------------------------
+    distance_factor = float(np.clip(distance_factor, 0.05, 0.95))
+    if dist_max > 0:
+        sure_fg = np.where(
+            dist_raw > (distance_factor * dist_max), 255, 0
+        ).astype(np.uint8)
+    else:
+        sure_fg = np.zeros_like(cleaned_binary, dtype=np.uint8)
+
+    # ------------------------------------------------------------------
+    # (3) Background chắc chắn = giãn vật thể 3 pixel theo hình chữ thập.
+    # ------------------------------------------------------------------
+    sure_bg = (
+        _dilate_cross(foreground, iterations=3).astype(np.uint8) * 255
     )
-    sure_fg = np.uint8(sure_fg)
 
-    # Dilate binary để lấy vùng background chắc chắn
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    sure_bg = cv2.dilate(cleaned_binary, kernel, iterations=3)
-
-    # Vùng không chắc = background - foreground
-    unknown = cv2.subtract(sure_bg, sure_fg)
+    # ------------------------------------------------------------------
+    # (4) Unknown = sure_bg \ sure_fg — vùng Watershed sẽ phân xử.
+    # ------------------------------------------------------------------
+    unknown = ((sure_bg > 0) & (sure_fg == 0)).astype(np.uint8) * 255
 
     return dist_map, sure_fg, sure_bg, unknown
+
+
+# ===========================================================================
+# 5D-1 — CONNECTED COMPONENTS LABELING (TỰ CÀI ĐẶT)
+# ===========================================================================
+def _connected_components_rle(mask: np.ndarray):
+    """
+    Gán nhãn thành phần liên thông 8-hướng bằng Run-Length Encoding
+    (RLE) + Union-Find, tự cài đặt — không dùng cv2.connectedComponents.
+
+    Ý tưởng:
+        1. Mỗi hàng ảnh được nén thành các "run" [start, end) gồm các
+           pixel foreground liên tiếp.
+        2. Hai run ở hai hàng kề nhau được nối nếu chúng giao nhau hoặc
+           chạm chéo (8-liên thông).
+        3. Union-Find gộp nhãn tạm của các run thuộc cùng thành phần.
+        4. Đổi root của Union-Find thành nhãn tuần tự 1..N và tô lại ảnh.
+
+    Vì số run thường nhỏ hơn rất nhiều so với số pixel, thuật toán nhanh
+    và ít tốn bộ nhớ hơn BFS từng pixel.
+
+    Tham số:
+        mask : mảng bool H×W (True = foreground).
+
+    Trả về:
+        (num_components, labels)
+        - num_components : số thành phần (không tính nền).
+        - labels         : int32 H×W; 0 = nền, 1..N = thành phần.
+    """
+    fg = np.asarray(mask, dtype=bool)
+    if fg.ndim != 2:
+        raise ValueError("mask phải là mảng 2 chiều.")
+
+    h, w = fg.shape
+    parent = []
+
+    def find(x: int) -> int:
+        """Tìm root với path compression (lặp, tránh đệ quy sâu)."""
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        """Gộp hai tập; root nhỏ hơn làm root để kết quả ổn định."""
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return
+        if ra < rb:
+            parent[rb] = ra
+        else:
+            parent[ra] = rb
+
+    rows = []
+    prev_runs = []
+
+    for y in range(h):
+        row = fg[y]
+
+        # Tìm các run [start, end) bằng đạo hàm trên hàng đã padding 0.
+        padded = np.empty(w + 2, dtype=np.int8)
+        padded[0] = 0
+        padded[-1] = 0
+        padded[1:-1] = row
+        diff = np.diff(padded)
+        starts = np.flatnonzero(diff == 1).tolist()
+        ends = np.flatnonzero(diff == -1).tolist()
+
+        runs = []
+        j = 0
+        prev_n = len(prev_runs)
+
+        for s, e in zip(starts, ends):
+            label = len(parent)
+            parent.append(label)
+
+            # Bỏ các run hàng trước nằm hoàn toàn bên trái.
+            # Điều kiện < s (không phải <= s) giữ lại trường hợp chạm chéo
+            # 8-liên thông: prev kết thúc tại s-1 và run mới bắt đầu tại s.
+            while j < prev_n and prev_runs[j][1] < s:
+                j += 1
+
+            # Nối với mọi run hàng trước còn giao / chạm run hiện tại.
+            # Với 8-liên thông, run trước được phép bắt đầu đúng tại e
+            # (pixel cuối của run hiện tại và pixel đầu của run trước
+            # nằm chéo nhau) → dùng <= e, không phải < e.
+            k = j
+            while k < prev_n and prev_runs[k][0] <= e:
+                union(label, prev_runs[k][2])
+                k += 1
+
+            runs.append((s, e, label))
+
+        rows.append(runs)
+        prev_runs = runs
+
+    if not parent:
+        return 0, np.zeros((h, w), dtype=np.int32)
+
+    # Nén root → nhãn 1..N theo thứ tự quét.
+    root_to_label = {}
+    labels = np.zeros((h, w), dtype=np.int32)
+
+    for y, runs in enumerate(rows):
+        for s, e, label in runs:
+            root = find(label)
+            out_label = root_to_label.get(root)
+            if out_label is None:
+                out_label = len(root_to_label) + 1
+                root_to_label[root] = out_label
+            labels[y, s:e] = out_label
+
+    return len(root_to_label), labels
+
+
+# ===========================================================================
+# 5D-2 — GRADIENT MAGNITUDE (SOBEL TỰ CÀI ĐẶT)
+# ===========================================================================
+def _sobel_gradient_magnitude(gray: np.ndarray) -> np.ndarray:
+    """
+    Tính gradient magnitude bằng Sobel 3×3, cài đặt trực tiếp bằng NumPy.
+
+    Quy trình:
+        1. Làm mượt Gaussian 3×3 với kernel 1-2-1 (separable):
+               [1 2 1]
+               [2 4 2] / 16
+               [1 2 1]
+        2. Tích chập với Sobel X và Sobel Y:
+               Gx = [[-1, 0, 1],      Gy = [[-1, -2, -1],
+                     [-2, 0, 2],            [ 0,  0,  0],
+                     [-1, 0, 1]]             [ 1,  2,  1]]
+        3. |G| = sqrt(Gx² + Gy²), chuẩn hóa về 0..255.
+
+    Gradient càng lớn = cạnh càng mạnh. Watershed sẽ ưu tiên mở rộng
+    vào vùng gradient nhỏ (vùng phẳng) trước.
+
+    Tham số:
+        gray : ảnh xám uint8 H×W.
+
+    Trả về:
+        gradient : uint8 H×W, 0..255.
+    """
+    g = gray.astype(np.float32, copy=False)
+    p = np.pad(g, 1, mode="edge")
+
+    # Gaussian 3×3 (1-2-1) — viết tường minh để thấy rõ kernel.
+    smooth = (
+        p[:-2, :-2] + 2.0 * p[:-2, 1:-1] + p[:-2, 2:]
+        + 2.0 * p[1:-1, :-2] + 4.0 * p[1:-1, 1:-1] + 2.0 * p[1:-1, 2:]
+        + p[2:, :-2] + 2.0 * p[2:, 1:-1] + p[2:, 2:]
+    ) / 16.0
+
+    q = np.pad(smooth, 1, mode="edge")
+
+    gx = (
+        q[:-2, 2:] + 2.0 * q[1:-1, 2:] + q[2:, 2:]
+        - q[:-2, :-2] - 2.0 * q[1:-1, :-2] - q[2:, :-2]
+    )
+    gy = (
+        q[2:, :-2] + 2.0 * q[2:, 1:-1] + q[2:, 2:]
+        - q[:-2, :-2] - 2.0 * q[:-2, 1:-1] - q[:-2, 2:]
+    )
+
+    # Sobel có tổng trọng số 4 theo mỗi trục → chia 4 để về thang 0..255.
+    magnitude = np.hypot(gx, gy) * 0.25
+    return np.clip(magnitude, 0.0, 255.0).astype(np.uint8)
+
+
+# ===========================================================================
+# 5D-3 — MARKER-BASED WATERSHED (MEYER FLOODING TỰ CÀI ĐẶT)
+# ===========================================================================
+def _watershed_flood(
+    gradient: np.ndarray,
+    markers: np.ndarray
+) -> np.ndarray:
+    """
+    Marker-based Watershed theo thuật toán flooding của Meyer, tự cài đặt.
+
+    Nguyên lý:
+        - Mỗi marker (label > 0) là một "hồ" đã có nước.
+        - Pixel unknown (label = 0) được đưa vào hàng đợi ưu tiên theo
+          gradient magnitude.
+        - Luôn xử lý pixel có gradient nhỏ nhất trước: nước lan qua
+          vùng phẳng trước, chậm lại ở cạnh mạnh.
+        - Khi hai nhãn khác nhau gặp nhau, tạo đường phân thủy.
+
+    Hàng đợi phân cấp (hierarchical queue):
+        - Gradient được lượng tử hóa thành 256 mức 0..255.
+        - buckets[level] là một array('i') chứa flat-index của pixel.
+        - heads[level] là con trỏ đọc đầu hàng.
+        - Mỗi pixel được enqueue đúng một lần → tổng chi phí queue O(N),
+          không có log(N) như heapq.
+        - Nếu trong lúc xử lý mức `current` phát hiện neighbor có mức
+          thấp hơn, thuật toán quay lại mức thấp hơn ngay để giữ đúng
+          thứ tự ưu tiên.
+
+    Tạo đường biên:
+        Sau khi flood, duyệt các cặp pixel kề nhau. Nếu hai nhãn khác
+        nhau, đặt pixel biên về phía có gradient lớn hơn. Cách này cho
+        đường watershed mảnh 1 pixel và bám sát cạnh thật.
+
+    Tham số:
+        gradient : uint8 H×W, gradient magnitude.
+        markers  : int32 H×W; 0 = unknown, 1 = background, >=2 = seed.
+
+    Trả về:
+        labels : int32 H×W; -1 = đường phân thủy, 1 = background,
+                 >=2 = vùng hạt.
+    """
+    labels = np.asarray(markers, dtype=np.int32).copy()
+    if labels.ndim != 2:
+        raise ValueError("markers phải là mảng 2 chiều.")
+
+    h, w = labels.shape
+    if h == 0 or w == 0:
+        return labels
+
+    wp = w + 2
+
+    # Padding viền -1 để không cần kiểm tra biên trong vòng lặp nóng.
+    labels_pad = np.pad(labels, 1, mode="constant", constant_values=-1)
+    grad_pad = np.pad(
+        np.asarray(gradient, dtype=np.uint8), 1, mode="edge"
+    )
+
+    lf = labels_pad.ravel()
+    gf = grad_pad.ravel()
+
+    # ------------------------------------------------------------------
+    # Khởi tạo frontier: unknown pixel kề với ít nhất một marker.
+    # Vectorized bằng bốn phép shift.
+    # ------------------------------------------------------------------
+    unknown = labels == 0
+    labeled = labels > 0
+    adjacent = np.zeros_like(unknown)
+    adjacent[1:, :] |= labeled[:-1, :]
+    adjacent[:-1, :] |= labeled[1:, :]
+    adjacent[:, 1:] |= labeled[:, :-1]
+    adjacent[:, :-1] |= labeled[:, 1:]
+    frontier = np.flatnonzero((unknown & adjacent).ravel())
+
+    buckets = [array("i") for _ in range(256)]
+    heads = [0] * 256
+    queued = np.zeros(lf.size, dtype=bool)
+
+    if frontier.size:
+        ys, xs = np.divmod(frontier, w)
+        padded_indices = (ys + 1) * wp + (xs + 1)
+        for pidx in padded_indices.tolist():
+            level = int(gf[pidx])
+            queued[pidx] = True
+            buckets[level].append(pidx)
+
+    # Mức thấp nhất đang có phần tử.
+    current = 0
+    while current < 256 and heads[current] >= len(buckets[current]):
+        current += 1
+
+    offsets = (-wp, wp, -1, 1)
+
+    while current < 256:
+        bucket = buckets[current]
+        switched = False
+
+        while heads[current] < len(bucket):
+            idx = bucket[heads[current]]
+            heads[current] += 1
+
+            if lf[idx] != 0:
+                continue
+
+            # Chọn nhãn của neighbor đã có nhãn và có gradient nhỏ nhất.
+            # Tie-break bằng label nhỏ hơn để kết quả ổn định.
+            best_label = 0
+            best_grad = 256
+            for off in offsets:
+                nidx = idx + off
+                nl = int(lf[nidx])
+                if nl > 0:
+                    ng = int(gf[nidx])
+                    if ng < best_grad or (
+                        ng == best_grad
+                        and (best_label == 0 or nl < best_label)
+                    ):
+                        best_grad = ng
+                        best_label = nl
+
+            if best_label == 0:
+                # Không còn neighbor có nhãn (trường hợp phòng vệ).
+                continue
+
+            lf[idx] = best_label
+
+            # Mở rộng sang 4 neighbor chưa có nhãn.
+            lower_level = 256
+            for off in offsets:
+                nidx = idx + off
+                if lf[nidx] == 0 and not queued[nidx]:
+                    queued[nidx] = True
+                    level = int(gf[nidx])
+                    buckets[level].append(nidx)
+                    if level < lower_level:
+                        lower_level = level
+
+            # Hierarchical queue: nếu có pixel ưu tiên thấp hơn, quay lại.
+            if lower_level < current:
+                current = lower_level
+                switched = True
+                break
+
+        if switched:
+            continue
+
+        current += 1
+        while current < 256 and heads[current] >= len(buckets[current]):
+            current += 1
+
+    labels = labels_pad[1:-1, 1:-1].copy()
+
+    # Vùng unknown còn sót (không tiếp cận được seed) → coi là nền.
+    labels[labels == 0] = 1
+
+    # ------------------------------------------------------------------
+    # Hậu xử lý: tạo đường phân thủy 1 pixel.
+    # Với mỗi cặp kề nhau khác nhãn, chọn phía có gradient lớn hơn.
+    # ------------------------------------------------------------------
+    boundary = np.zeros((h, w), dtype=bool)
+
+    diff = labels[:, 1:] != labels[:, :-1]
+    choose_right = diff & (gradient[:, 1:] >= gradient[:, :-1])
+    choose_left = diff & ~choose_right
+    boundary[:, 1:] |= choose_right
+    boundary[:, :-1] |= choose_left
+
+    diff = labels[1:, :] != labels[:-1, :]
+    choose_bottom = diff & (gradient[1:, :] >= gradient[:-1, :])
+    choose_top = diff & ~choose_bottom
+    boundary[1:, :] |= choose_bottom
+    boundary[:-1, :] |= choose_top
+
+    labels[boundary] = -1
+    return labels
 
 
 # ---------------------------------------------------------------------------
@@ -540,28 +1150,46 @@ def _watershed_segment(
     Gán markers và chạy Watershed algorithm.
 
     Tham số:
-        img_bgr : Ảnh màu BGR (input cho cv2.watershed).
+        img_bgr : Ảnh màu BGR (dùng để tính gradient magnitude).
         sure_fg : Vùng foreground chắc chắn (uint8).
         unknown : Vùng không xác định (uint8).
 
     Trả về:
         markers   : Ma trận int32 chứa nhãn phân đoạn
                     (0=unknown, -1=boundary, 1=background, >1=region).
-        num_labels: Số nhãn từ connectedComponents (bao gồm background).
+        num_labels: Số thành phần seed + 1 (background).
+
+    Ghi chú thuật toán:
+        - Connected Components 8-hướng dùng RLE + Union-Find tự cài đặt,
+          không gọi cv2.connectedComponents.
+        - Gradient dùng Sobel 3×3 tự cài đặt.
+        - Watershed dùng Meyer flooding với hierarchical queue tự cài đặt,
+          không gọi cv2.watershed.
     """
-    # Connected Components trên sure_fg → gán nhãn ban đầu
-    num_labels, markers = cv2.connectedComponents(sure_fg)
+    # ------------------------------------------------------------------
+    # (1) Gradient magnitude của ảnh xám — "địa hình" cho watershed.
+    # ------------------------------------------------------------------
+    gray = _to_grayscale(img_bgr)
+    gradient = _sobel_gradient_magnitude(gray)
 
-    # Tăng tất cả labels lên 1 để background=0 thành background=1
-    markers = markers + 1
+    # ------------------------------------------------------------------
+    # (2) Connected Components trên sure_fg → marker cho từng hạt.
+    #     labels: 0 = nền, 1..N = các thành phần sure_fg.
+    # ------------------------------------------------------------------
+    num_components, components = _connected_components_rle(sure_fg > 0)
 
-    # Đặt vùng unknown = 0 (Watershed sẽ quyết định)
+    # Dịch label +1 để background (0) trở thành 1; các hạt thành 2..N+1.
+    markers = components + 1
+
+    # Vùng unknown = 0 để watershed quyết định.
     markers[unknown == 255] = 0
 
-    # Watershed: điền vào vùng 0, tạo boundary = -1
-    markers = cv2.watershed(img_bgr, markers)
+    # ------------------------------------------------------------------
+    # (3) Flooding: lan nhãn vào vùng unknown theo thứ tự gradient.
+    # ------------------------------------------------------------------
+    markers = _watershed_flood(gradient, markers)
 
-    return markers, num_labels
+    return markers, num_components + 1
 
 
 # ---------------------------------------------------------------------------
@@ -584,39 +1212,82 @@ def _measure_particles(
         min_area : Lọc bỏ các vùng < min_area px² (nhiễu, cặn mẫu).
     """
     particles = []
-    unique_labels = np.unique(markers)
+    if markers.ndim != 2 or markers.size == 0:
+        return particles
 
-    # Label 0 = unknown, -1 = boundary, 1 = background → bỏ qua
-    valid_labels = [lb for lb in unique_labels if lb > 1]
+    # ------------------------------------------------------------------
+    # BƯỚC 1 — THỐNG KÊ VECTORIZED BẰNG NUMPY
+    # Thay vì tạo mask H×W cho từng label (O(số_hạt × số_pixel)), ta chỉ
+    # duyệt các pixel foreground đúng một lần rồi dùng bincount/reduceat.
+    # ------------------------------------------------------------------
+    h, w = markers.shape
+    flat = markers.ravel()
+    foreground = np.flatnonzero(flat > 1)  # bỏ 0 (unknown), -1 (viền), 1 (nền)
+    if foreground.size == 0:
+        return particles
 
-    for label in valid_labels:
-        mask = np.zeros(markers.shape, dtype=np.uint8)
-        mask[markers == label] = 255
+    fg_labels = flat[foreground]
+    labels, inverse, counts = np.unique(
+        fg_labels, return_inverse=True, return_counts=True
+    )
 
-        area = int(cv2.countNonZero(mask))
+    ys = (foreground // w).astype(np.int64, copy=False)
+    xs = (foreground % w).astype(np.int64, copy=False)
+
+    # Tổng tọa độ để tính centroid từng label
+    sum_x = np.bincount(inverse, weights=xs, minlength=labels.size)
+    sum_y = np.bincount(inverse, weights=ys, minlength=labels.size)
+
+    # Bounding box từng label: sắp xếp theo inverse rồi reduceat
+    order = np.argsort(inverse, kind="stable")
+    inverse_sorted = inverse[order]
+    starts = np.searchsorted(inverse_sorted, np.arange(labels.size), side="left")
+    min_y = np.minimum.reduceat(ys[order], starts)
+    max_y = np.maximum.reduceat(ys[order], starts)
+    min_x = np.minimum.reduceat(xs[order], starts)
+    max_x = np.maximum.reduceat(xs[order], starts)
+
+    # ------------------------------------------------------------------
+    # BƯỚC 2 — CONTOUR CỤC BỘ ĐỂ TÍNH CHU VI
+    # Chỉ cắt vùng bounding box (nhỏ hơn nhiều so với toàn ảnh) và thêm
+    # 1px viền để cv2.findContours xử lý đúng hạt chạm biên crop.
+    # ------------------------------------------------------------------
+    for idx, label in enumerate(labels):
+        area = int(counts[idx])
         if area < min_area:
             continue
 
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        y0 = int(min_y[idx])
+        x0 = int(min_x[idx])
+        y1 = int(max_y[idx]) + 1
+        x1 = int(max_x[idx]) + 1
+
+        local_mask = (markers[y0:y1, x0:x1] == label).astype(np.uint8) * 255
+        local_mask = cv2.copyMakeBorder(
+            local_mask, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0
+        )
+
+        contours, _ = cv2.findContours(
+            local_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
         if not contours:
             continue
         cnt = max(contours, key=cv2.contourArea)
-
         perimeter = float(cv2.arcLength(cnt, closed=True))
 
-        M = cv2.moments(mask)
-        if M["m00"] > 0:
-            cx = round(M["m10"] / M["m00"], 1)
-            cy = round(M["m01"] / M["m00"], 1)
-        else:
-            x, y, w, h = cv2.boundingRect(cnt)
-            cx = round(x + w / 2.0, 1)
-            cy = round(y + h / 2.0, 1)
+        # Centroid vectorized; fallback về tâm bounding box nếu cần
+        cx = round(float(sum_x[idx]) / area, 1)
+        cy = round(float(sum_y[idx]) / area, 1)
 
         equiv_diameter = round(2 * np.sqrt(area / np.pi), 2)
 
         if perimeter > 0:
-            circularity = round(4 * np.pi * area / (perimeter ** 2), 4)
+            # Circularity lý thuyết ≤ 1; contour pixel hóa có thể nhích > 1
+            # với hạt rất nhỏ nên clip lại cho dữ liệu hiển thị hợp lý.
+            circularity = round(
+                float(np.clip(4 * np.pi * area / (perimeter ** 2), 0.0, 1.0)),
+                4,
+            )
         else:
             circularity = 0.0
 
@@ -661,7 +1332,7 @@ def _draw_results(
         - #ID: số trắng có bóng đen
 
     Lưu ý kỹ thuật:
-        Phải dùng p["ws_label"] (label gốc từ Watershed / connectedComponents)
+        Phải dùng p["ws_label"] (label gốc do Watershed gán)
         để tra cứu đúng vùng trong ma trận markers.
         KHÔNG dùng (i + 2) vì particles đã được sort lại theo diện tích
         → thứ tự index i không còn tương ứng với label trong markers nữa.
@@ -669,22 +1340,24 @@ def _draw_results(
     output = img_bgr.copy()
 
     rng = np.random.default_rng(seed=42)
-    # Tạo bảng màu ngẫu nhiên ổn định: seed cố định → màu không đổi mỗi lần gọi
-    max_label = max((p["ws_label"] for p in particles), default=2) + 2
-    colors = rng.integers(60, 220, size=(max_label, 3)).tolist()
+    # Tạo bảng màu ngẫu nhiên ổn định: seed cố định → màu không đổi mỗi lần gọi.
+    # Palette được tra một lần bằng NumPy indexing thay vì tạo mask cho từng hạt.
+    max_label = int(markers.max(initial=1)) + 1
+    palette = rng.integers(70, 235, size=(max_label + 1, 3), dtype=np.uint8)
 
     # --- (1) TÔ MÀU TỪNG VÙNG HẠT ---
-    # Dùng p["ws_label"] để tra đúng vùng trong ma trận markers
-    if color_map:
-        for p in particles:
-            ws_lbl = p["ws_label"]
-            mask_color = markers == ws_lbl
-            if not mask_color.any():
-                continue
-            color_bgr = np.array(colors[ws_lbl % len(colors)], dtype=np.float64)
-            output[mask_color] = (
-                output[mask_color].astype(np.float64) * 0.45 + color_bgr * 0.55
-            ).clip(0, 255).astype(np.uint8)
+    if color_map and particles:
+        particle_labels = np.fromiter(
+            (p["ws_label"] for p in particles),
+            dtype=np.int32,
+            count=len(particles),
+        )
+        color_mask = np.isin(markers, particle_labels)
+        mapped_colors = palette[np.clip(markers, 0, max_label)]
+        output[color_mask] = (
+            output[color_mask].astype(np.float32) * 0.45
+            + mapped_colors[color_mask].astype(np.float32) * 0.55
+        ).clip(0, 255).astype(np.uint8)
 
     # --- (2) VẼ ĐƯỜNG VIỀN WATERSHED (markers == -1) ---
     # Đây là điểm mấu chốt: đường viền = nơi "nước" từ hai lõi gặp nhau
@@ -724,13 +1397,223 @@ def _draw_results(
 # ---------------------------------------------------------------------------
 def _render_distance_map(dist_map: np.ndarray) -> np.ndarray:
     """
-    Chuyển bản đồ khoảng cách (float32, 0→1) thành ảnh màu JET để hiển thị.
+    Chuyển bản đồ khoảng cách (float32, 0→1) thành ảnh màu JET.
+
+    Colormap JET được cài đặt trực tiếp bằng NumPy (nội suy tuyến tính
+    giữa các mốc màu), không dùng cv2.applyColorMap.
+
+    Các mốc JET:
+        0.000 → navy   (0.0, 0.0, 0.5)
+        0.125 → blue   (0.0, 0.0, 1.0)
+        0.375 → cyan   (0.0, 1.0, 1.0)
+        0.625 → yellow (1.0, 1.0, 0.0)
+        0.875 → red    (1.0, 0.0, 0.0)
+        1.000 → dark red (0.5, 0.0, 0.0)
+
     Màu NÓNG (đỏ/vàng) = xa nền nhất = tâm hạt.
     Màu LẠNH (xanh đậm) = gần nền nhất = rìa hạt.
     """
-    dist_8u = (dist_map * 255).astype(np.uint8)
-    dist_color = cv2.applyColorMap(dist_8u, cv2.COLORMAP_JET)
-    return dist_color
+    x = np.clip(np.asarray(dist_map, dtype=np.float32), 0.0, 1.0)
+
+    positions = np.array(
+        [0.0, 0.125, 0.375, 0.625, 0.875, 1.0], dtype=np.float32
+    )
+    red = np.array(
+        [0.0, 0.0, 0.0, 1.0, 1.0, 0.5], dtype=np.float32
+    )
+    green = np.array(
+        [0.0, 0.0, 1.0, 1.0, 0.0, 0.0], dtype=np.float32
+    )
+    blue = np.array(
+        [0.5, 1.0, 1.0, 0.0, 0.0, 0.0], dtype=np.float32
+    )
+
+    r = np.interp(x, positions, red).astype(np.float32)
+    g = np.interp(x, positions, green).astype(np.float32)
+    b = np.interp(x, positions, blue).astype(np.float32)
+
+    # OpenCV / cv2.imencode dùng thứ tự BGR.
+    bgr = np.stack((b, g, r), axis=-1)
+    return np.clip(bgr * 255.0, 0.0, 255.0).astype(np.uint8)
+
+
+# ---------------------------------------------------------------------------
+# HÀM TIỆN ÍCH 5H: PIPELINE PHÂN ĐOẠN DÙNG CHUNG
+# ---------------------------------------------------------------------------
+def _segment_particles(
+    img_bgr: np.ndarray,
+    method: str = "otsu",
+    threshold: int = 128,
+    distance_factor: float = 0.45,
+    min_area: int = 20,
+):
+    """
+    Chạy pipeline: Grayscale → Binarize → Opening → Distance Transform
+    → Watershed → Measurements.
+
+    Tách riêng để API JSON và API CSV dùng cùng một logic, tránh lệch số liệu.
+
+    Ghi chú về việc "tự cài đặt":
+        - Distance Transform: _euclidean_distance_transform (separable EDT).
+        - Connected Components: _connected_components_rle (RLE + Union-Find).
+        - Gradient: _sobel_gradient_magnitude (Sobel + Gaussian 3×3).
+        - Watershed: _watershed_flood (Meyer hierarchical queue).
+        - Các phép ngưỡng / thống kê / bbox / tô màu: NumPy vectorized.
+        OpenCV chỉ còn được dùng cho I/O ảnh và các bước tiền xử lý
+        (Gaussian blur, threshold, morphology) ở giai đoạn binarization.
+    """
+    method = (method or "otsu").strip().lower()
+    if method not in {"otsu", "adaptive", "triangle", "manual"}:
+        method = "otsu"
+
+    threshold = int(np.clip(threshold, 1, 254))
+    distance_factor = float(np.clip(distance_factor, 0.05, 0.95))
+    min_area = max(1, int(min_area))
+
+    gray = _to_grayscale(img_bgr)
+    binary = _binarize(gray, method=method, manual_threshold=threshold)
+    cleaned = _morphological_clean(binary)
+
+    dist_map, sure_fg, _sure_bg, unknown = _distance_transform(
+        cleaned, distance_factor=distance_factor
+    )
+    markers, _num_labels = _watershed_segment(
+        img_bgr.copy(), sure_fg, unknown
+    )
+    particles = _measure_particles(markers, min_area=min_area)
+
+    return markers, particles, dist_map
+
+
+# ---------------------------------------------------------------------------
+# HÀM TIỆN ÍCH 5I: PHÂN TÍCH MỘT ẢNH & ĐÓNG GÓI KẾT QUẢ JSON
+# ---------------------------------------------------------------------------
+def _analyze_particle_image(
+    image_bytes: bytes,
+    method: str,
+    threshold: int,
+    distance_factor: float,
+    min_area: int,
+    show_boundary: bool,
+    show_centroid: bool,
+    show_id: bool,
+    color_map: bool,
+) -> dict:
+    """Chạy toàn bộ pipeline 5A và trả về dict sẵn sàng cho JSONResponse."""
+    started_at = time.perf_counter()
+
+    # 5-I — Đọc & decode ảnh (giới hạn 1600px để phản hồi ổn định)
+    img_bgr = _decode_image_bytes(image_bytes, max_dim=1600)
+    total_pixels = int(img_bgr.shape[0] * img_bgr.shape[1])
+
+    # 5-II → 5-V — Tiền xử lý, Distance Transform, Watershed, đo lường
+    markers, particles, dist_map = _segment_particles(
+        img_bgr,
+        method=method,
+        threshold=threshold,
+        distance_factor=distance_factor,
+        min_area=min_area,
+    )
+
+    # 5-VI — Vẽ viền/tâm/#ID + bản đồ khoảng cách
+    result_img = _draw_results(
+        img_bgr,
+        markers,
+        particles,
+        show_boundary=show_boundary,
+        show_centroid=show_centroid,
+        show_id=show_id,
+        color_map=color_map,
+    )
+    dist_img_colored = _render_distance_map(dist_map)
+
+    # 5-VII — Mã hóa base64
+    ok_result, result_encoded = cv2.imencode(
+        ".jpg", result_img, [cv2.IMWRITE_JPEG_QUALITY, 88]
+    )
+    ok_dist, dist_encoded = cv2.imencode(
+        ".jpg", dist_img_colored, [cv2.IMWRITE_JPEG_QUALITY, 85]
+    )
+    if not ok_result or not ok_dist:
+        raise ValueError("Không thể mã hóa ảnh kết quả.")
+
+    result_b64 = base64.b64encode(result_encoded.tobytes()).decode("utf-8")
+    dist_b64 = base64.b64encode(dist_encoded.tobytes()).decode("utf-8")
+
+    # 5-VIII — Chỉ số tổng hợp
+    total_count = len(particles)
+    if total_count > 0:
+        total_area = int(sum(p["area_px"] for p in particles))
+        avg_area = round(total_area / total_count, 2)
+        coverage_pct = round(min(total_area / max(total_pixels, 1) * 100.0, 100.0), 2)
+        avg_circularity = round(
+            sum(p["circularity"] for p in particles) / total_count, 4
+        )
+    else:
+        total_area = 0
+        avg_area = 0.0
+        coverage_pct = 0.0
+        avg_circularity = 0.0
+
+    # Không trả ws_label nội bộ ra ngoài
+    particles_json = [
+        {k: v for k, v in p.items() if k != "ws_label"}
+        for p in particles
+    ]
+
+    processing_ms = round((time.perf_counter() - started_at) * 1000.0, 1)
+
+    return {
+        "total_count": total_count,
+        "avg_area": avg_area,
+        "coverage_pct": coverage_pct,
+        "avg_circularity": avg_circularity,
+        "total_area_px": total_area,
+        "result_image_b64": result_b64,
+        "dist_image_b64": dist_b64,
+        "particles": particles_json,
+        "image_width": int(img_bgr.shape[1]),
+        "image_height": int(img_bgr.shape[0]),
+        "processing_ms": processing_ms,
+        "method": (method or "otsu").strip().lower(),
+        "threshold": int(np.clip(threshold, 1, 254)),
+        "distance_factor": round(float(np.clip(distance_factor, 0.05, 0.95)), 2),
+        "min_area": max(1, int(min_area)),
+    }
+
+
+def _build_particle_csv(
+    image_bytes: bytes,
+    method: str,
+    threshold: int,
+    distance_factor: float,
+    min_area: int,
+) -> bytes:
+    """Chạy cùng pipeline 5A rồi đóng gói bảng đo lường thành CSV UTF-8."""
+    img_bgr = _decode_image_bytes(image_bytes, max_dim=1600)
+    _markers, particles, _dist_map = _segment_particles(
+        img_bgr,
+        method=method,
+        threshold=threshold,
+        distance_factor=distance_factor,
+        min_area=min_area,
+    )
+
+    output_csv = io.StringIO()
+    writer = csv.writer(output_csv)
+    writer.writerow([
+        "#ID", "Tam_X(px)", "Tam_Y(px)",
+        "Dien_tich(px2)", "Chu_vi(px)",
+        "Duong_kinh_tuong_duong(px)", "Do_tron(0-1)",
+    ])
+    for p in particles:
+        writer.writerow([
+            p["id"], p["cx"], p["cy"],
+            p["area_px"], p["perimeter_px"],
+            p["equiv_diameter_px"], p["circularity"],
+        ])
+
+    return output_csv.getvalue().encode("utf-8-sig")  # BOM cho Excel tiếng Việt
 
 
 # ---------------------------------------------------------------------------
@@ -776,79 +1659,34 @@ async def particle_count(
           "particles"        : [ {...} ]
         }
     """
-    import base64
-
     # =========================================================
     # PHÂN VÙNG 5-I: ĐỌC & DECODE ẢNH ĐẦU VÀO
     # =========================================================
-    
-
-
-    # =========================================================
-    # PHÂN VÙNG 5-II: TIỀN XỬ LÝ — GRAYSCALE & BINARIZATION
-    # =========================================================
-   
+    image_bytes = await file.read()
 
     # =========================================================
-    # PHÂN VÙNG 5-III: DISTANCE TRANSFORM
+    # PHÂN VÙNG 5-II → 5-VIII: CHẠY PIPELINE TRONG THREADPOOL
     # =========================================================
-   
+    # Distance Transform + Watershed là tác vụ CPU-bound. Đưa vào
+    # threadpool để không chặn event loop của FastAPI (các request
+    # preview/export khác vẫn được phục vụ song song).
+    try:
+        result = await run_in_threadpool(
+            _analyze_particle_image,
+            image_bytes,
+            method,
+            threshold,
+            distance_factor,
+            min_area,
+            show_boundary,
+            show_centroid,
+            show_id,
+            color_map,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # =========================================================
-    # PHÂN VÙNG 5-IV: WATERSHED SEGMENTATION
-    # =========================================================
-   
-    # =========================================================
-    # PHÂN VÙNG 5-V: ĐO LƯỜNG HÌNH THÁI TỪNG HẠT
-    # =========================================================
-   
-
-    # =========================================================
-    # PHÂN VÙNG 5-VI: VẼ KẾT QUẢ LÊN ẢNH
-    # =========================================================
-    
-
-    # =========================================================
-    # PHÂN VÙNG 5-VII: MÃ HÓA ẢNH THÀNH BASE64 ĐỂ TRẢ VỀ JSON
-    # =========================================================
-    _, result_encoded = cv2.imencode(".jpg", result_img,  [cv2.IMWRITE_JPEG_QUALITY, 88])
-    _, dist_encoded   = cv2.imencode(".jpg", dist_img_colored, [cv2.IMWRITE_JPEG_QUALITY, 85])
-
-    result_b64 = base64.b64encode(result_encoded.tobytes()).decode("utf-8")
-    dist_b64   = base64.b64encode(dist_encoded.tobytes()).decode("utf-8")
-
-    # =========================================================
-    # PHÂN VÙNG 5-VIII: TÍNH TOÁN CÁC CHỈ SỐ TỔNG HỢP
-    # =========================================================
-    total_count = len(particles)
-
-    if total_count > 0:
-        avg_area        = round(sum(p["area_px"]      for p in particles) / total_count, 2)
-        total_area      = sum(p["area_px"] for p in particles)
-        coverage_pct    = round(total_area / total_pixels * 100, 2)
-        avg_circularity = round(sum(p["circularity"]  for p in particles) / total_count, 4)
-    else:
-        avg_area        = 0.0
-        coverage_pct    = 0.0
-        avg_circularity = 0.0
-
-    # Loại bỏ trường nội bộ ws_label trước khi trả về JSON
-    # (ws_label chỉ dùng nội bộ trong _draw_results, không cần thiết ở frontend)
-    particles_json = [
-        {k: v for k, v in p.items() if k != "ws_label"}
-        for p in particles
-    ]
-
-    return JSONResponse(content={
-        "status"           : "success",
-        "total_count"      : total_count,
-        "avg_area"         : avg_area,
-        "coverage_pct"     : coverage_pct,
-        "avg_circularity"  : avg_circularity,
-        "result_image_b64" : result_b64,
-        "dist_image_b64"   : dist_b64,
-        "particles"        : particles_json,
-    })
+    return JSONResponse(content={"status": "success", **result})
 
 
 # ---------------------------------------------------------------------------
@@ -868,42 +1706,23 @@ async def particle_export_csv(
     Endpoint: POST /api/particle-export-csv
     Response: file CSV (text/csv) với các cột:
         #ID, Tam_X, Tam_Y, Dien_tich_px2, Chu_vi_px, Duong_kinh_px, Do_tron
+
+    Dùng chung pipeline và giới hạn 1600px với /api/particle-count để số
+    liệu CSV khớp chính xác với kết quả đang hiển thị trên giao diện.
     """
-    import io, csv
-
     image_bytes = await file.read()
-    nparr = np.frombuffer(image_bytes, np.uint8)
-    img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    if img_bgr is None:
-        raise HTTPException(status_code=400, detail="File ảnh không hợp lệ.")
+    try:
+        csv_bytes = await run_in_threadpool(
+            _build_particle_csv,
+            image_bytes,
+            method,
+            threshold,
+            distance_factor,
+            min_area,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    max_dim = max(img_bgr.shape[:2])
-    if max_dim > 1200:
-        scale = 1200.0 / max_dim
-        img_bgr = cv2.resize(img_bgr,
-                             (int(img_bgr.shape[1] * scale), int(img_bgr.shape[0] * scale)),
-                             interpolation=cv2.INTER_AREA)
-
-    gray    = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    binary  = _binarize(gray, method=method, manual_threshold=threshold)
-    cleaned = _morphological_clean(binary)
-    _, sure_fg, _, unknown = _distance_transform(cleaned, distance_factor=distance_factor)
-    markers, _             = _watershed_segment(img_bgr.copy(), sure_fg, unknown)
-    particles              = _measure_particles(markers, min_area=min_area)
-
-    output_csv = io.StringIO()
-    writer = csv.writer(output_csv)
-    writer.writerow(["#ID", "Tam_X(px)", "Tam_Y(px)",
-                     "Dien_tich(px2)", "Chu_vi(px)",
-                     "Duong_kinh_tuong_duong(px)", "Do_tron(0-1)"])
-    for p in particles:
-        writer.writerow([
-            p["id"], p["cx"], p["cy"],
-            p["area_px"], p["perimeter_px"],
-            p["equiv_diameter_px"], p["circularity"]
-        ])
-
-    csv_bytes = output_csv.getvalue().encode("utf-8-sig")   # BOM cho Excel tiếng Việt
     return Response(
         content=csv_bytes,
         media_type="text/csv",
