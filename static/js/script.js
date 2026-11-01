@@ -73,6 +73,24 @@ const particleTableBody = $('particleTableBody');
 const particleDataCount = $('particleDataCount');
 const tabParticle = $('tabParticle');
 
+const particleHistogramCard = $('particleHistogramCard');
+const histogramViewToggle = $('histogramViewToggle');
+const particleHistogramImg = $('particleHistogramImg');
+const histogramChartWrapper = $('histogramChartWrapper');
+const histogramPlaceholder = $('histogramPlaceholder');
+const histogramStatsFooter = $('histogramStatsFooter');
+const histogramMetricLabel = $('histogramMetricLabel');
+const btnDownloadHistogram = $('btnDownloadHistogram');
+const histStatN = $('histStatN');
+const histStatMean = $('histStatMean');
+const histStatMedian = $('histStatMedian');
+const histStatStd = $('histStatStd');
+const histStatOtsu = $('histStatOtsu');
+const histStatTriangle = $('histStatTriangle');
+const histStatAdaptive = $('histStatAdaptive');
+const histStatManual = $('histStatManual');
+const histStatRange = $('histStatRange');
+
 const numberFormatter = new Intl.NumberFormat('vi-VN', {
 	maximumFractionDigits: 2,
 });
@@ -111,6 +129,9 @@ const state = {
 	beforeObjectUrl: null,
 	isAnalyzing: false,
 	cachedSessions: [],
+	currentParticles: [],
+	currentHistMode: 'all',
+	histCache: {},
 };
 
 // --- 2. TIỆN ÍCH HIỂN THỊ ---------------------------------------------------
@@ -265,6 +286,20 @@ function resetAnalysisUI() {
 	if (metricCircularity) metricCircularity.textContent = '--';
 	if (particleDataCount) particleDataCount.textContent = '0 kết quả';
 	if (particleTableBody) particleTableBody.innerHTML = TABLE_EMPTY_HTML;
+
+	state.currentParticles = [];
+	state.currentHistMode = 'all';
+	state.currentGrayStats = null;
+	state.histCache = {};
+	if (histogramChartWrapper) histogramChartWrapper.hidden = true;
+	if (histogramPlaceholder) histogramPlaceholder.hidden = false;
+	if (histogramStatsFooter) histogramStatsFooter.hidden = true;
+	if (btnDownloadHistogram) btnDownloadHistogram.hidden = true;
+	if (particleHistogramImg) particleHistogramImg.src = '';
+	if (histogramMetricLabel) {
+		histogramMetricLabel.textContent = 'Phân bố tần suất 256 mức xám (0: Đen / Tối — 255: Trắng / Sáng)';
+	}
+	updateHistToggleButtons('all');
 }
 
 // --- 3. TẢI ẢNH & PREVIEW BIẾN ĐỔI ----------------------------------------
@@ -858,6 +893,111 @@ function renderParticleTable(particles) {
 	}
 }
 
+// --- 6B. MATPLOTLIB GRAYSCALE HISTOGRAM CONTROLLER ------------------------
+
+function updateHistToggleButtons(mode) {
+	document.querySelectorAll('[data-hist-mode]').forEach((button) => {
+		const isActive = button.dataset.histMode === mode;
+		button.classList.toggle('is-active', isActive);
+		button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+	});
+}
+
+function renderHistogramStats(stats) {
+	if (!stats || typeof stats !== 'object' || Object.keys(stats).length === 0) {
+		if (histStatN) histStatN.textContent = '--';
+		if (histStatMean) histStatMean.textContent = '--';
+		if (histStatOtsu) histStatOtsu.textContent = '--';
+		if (histStatTriangle) histStatTriangle.textContent = '--';
+		if (histStatAdaptive) histStatAdaptive.textContent = '--';
+		if (histStatManual) histStatManual.textContent = '--';
+		if (histStatRange) histStatRange.textContent = '--';
+		document.querySelectorAll('.stat-badge[class*="badge-"]').forEach((b) => b.classList.remove('is-selected-method'));
+		return;
+	}
+
+	if (histStatN) {
+		histStatN.textContent = stats.total_pixels ? `${numberFormatter.format(stats.total_pixels)} px` : '--';
+	}
+	if (histStatMean) {
+		histStatMean.textContent = stats.mean != null ? `${stats.mean}` : '--';
+	}
+
+	const th = stats.thresholds || {};
+	if (histStatOtsu) histStatOtsu.textContent = th.otsu != null ? `${th.otsu}` : '--';
+	if (histStatTriangle) histStatTriangle.textContent = th.triangle != null ? `${th.triangle}` : '--';
+	if (histStatAdaptive) histStatAdaptive.textContent = th.adaptive != null ? `${th.adaptive}` : '--';
+	if (histStatManual) histStatManual.textContent = th.manual != null ? `${th.manual}` : '--';
+
+	if (histStatRange) {
+		histStatRange.textContent = stats.min != null && stats.max != null ? `[${stats.min} – ${stats.max}]` : '--';
+	}
+
+	// Đánh dấu phương pháp ngưỡng đang được áp dụng
+	const activeMethod = th.selected_method || 'otsu';
+	['otsu', 'triangle', 'adaptive', 'manual'].forEach((m) => {
+		const badge = document.querySelector(`.stat-badge.badge-${m}`);
+		if (badge) {
+			badge.classList.toggle('is-selected-method', activeMethod === m);
+		}
+	});
+}
+
+const HIST_MODE_LABELS = {
+	all: 'Phổ phân bố mức xám toàn bộ pixel ảnh & Đối chiếu 4 phương pháp ngưỡng',
+	foreground: 'Phổ phân bố mức xám các pixel thuộc vùng hạt (Foreground)',
+	comparison: 'So sánh trực quan phân bố mức xám giữa Vùng hạt và Vùng nền',
+};
+
+function displayHistogram(b64, mode, stats) {
+	if (!particleHistogramImg) return;
+	state.currentHistMode = mode || 'all';
+	state.currentGrayStats = stats || state.currentGrayStats || {};
+
+	particleHistogramImg.src = `data:image/png;base64,${b64}`;
+	if (histogramChartWrapper) histogramChartWrapper.hidden = false;
+	if (histogramPlaceholder) histogramPlaceholder.hidden = true;
+	if (histogramStatsFooter) histogramStatsFooter.hidden = false;
+	if (btnDownloadHistogram) btnDownloadHistogram.hidden = false;
+
+	updateHistToggleButtons(state.currentHistMode);
+	if (histogramMetricLabel) {
+		histogramMetricLabel.textContent = HIST_MODE_LABELS[state.currentHistMode] || HIST_MODE_LABELS.all;
+	}
+	renderHistogramStats(state.currentGrayStats);
+}
+
+async function switchHistogramMode(mode) {
+	mode = mode || 'all';
+	if (state.histCache[mode]) {
+		const cached = state.histCache[mode];
+		displayHistogram(cached.b64, mode, cached.stats);
+		return;
+	}
+
+	try {
+		updateHistToggleButtons(mode);
+		if (histogramChartWrapper) histogramChartWrapper.style.opacity = '0.6';
+		const response = await fetch('/api/particle-histogram', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ mode: mode }),
+		});
+
+		if (!response.ok) throw new Error('Không thể tạo biểu đồ histogram mức xám.');
+		const data = await response.json();
+		if (data.status === 'success' && data.histogram_b64) {
+			state.histCache[mode] = { b64: data.histogram_b64, stats: data.gray_stats || {} };
+			displayHistogram(data.histogram_b64, mode, data.gray_stats || {});
+		}
+	} catch (error) {
+		console.error('Lỗi tải histogram:', error);
+		showToast(`❌ ${error.message || 'Lỗi khi vẽ biểu đồ histogram mức xám.'}`);
+	} finally {
+		if (histogramChartWrapper) histogramChartWrapper.style.opacity = '1';
+	}
+}
+
 async function runWatershed() {
 	if (!state.currentFile) {
 		showToast('⚠️ Vui lòng tải ảnh lên trước khi thực hiện đếm hạt.');
@@ -925,6 +1065,13 @@ async function runWatershed() {
 
 		renderMetricCards(data);
 		renderParticleTable(data.particles);
+
+		state.currentParticles = data.particles || [];
+		state.histCache = {};
+		if (data.histogram_b64) {
+			state.histCache['all'] = { b64: data.histogram_b64, stats: data.gray_stats || {} };
+			displayHistogram(data.histogram_b64, 'all', data.gray_stats || {});
+		}
 
 		if (analysisMeta) {
 			const methodLabel = (data.method || params.method || 'otsu').toUpperCase();
@@ -1002,6 +1149,30 @@ async function exportParticleCSV() {
 if (btnRunWatershed) btnRunWatershed.addEventListener('click', runWatershed);
 if (btnResetWatershed) btnResetWatershed.addEventListener('click', resetWatershedParams);
 if (btnExportDataCsv) btnExportDataCsv.addEventListener('click', exportParticleCSV);
+
+if (histogramViewToggle) {
+	histogramViewToggle.addEventListener('click', (event) => {
+		const btn = event.target.closest('[data-hist-mode]');
+		if (!btn) return;
+		switchHistogramMode(btn.dataset.histMode);
+	});
+}
+
+if (btnDownloadHistogram) {
+	btnDownloadHistogram.addEventListener('click', () => {
+		if (!particleHistogramImg || !particleHistogramImg.src) {
+			showToast('⚠️ Chưa có ảnh biểu đồ để tải về.');
+			return;
+		}
+		const a = document.createElement('a');
+		a.href = particleHistogramImg.src;
+		a.download = `grayscale_histogram_${state.currentHistMode || 'chart'}.png`;
+		document.body.appendChild(a);
+		a.click();
+		document.body.removeChild(a);
+		showToast('✓ Đã tải ảnh biểu đồ histogram (PNG).');
+	});
+}
 
 if (wsMethodSelect) {
 	wsMethodSelect.addEventListener('change', syncMethodUI);

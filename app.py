@@ -21,6 +21,9 @@ import time
 from array import array
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 app = FastAPI()
 
@@ -61,6 +64,13 @@ class ImageCache:
             self.cache.popitem(last=False)
 
 image_cache = ImageCache(max_size=10)
+# Bộ lưu trữ ảnh xám gần nhất để vẽ lại histogram nhanh khi đổi chế độ hiển thị
+last_particle_gray_data = {
+    "gray": None,
+    "fg_mask": None,
+    "threshold": 128,
+}
+
 
 # --- ROUTE 1: HIỂN THỊ GIAO DIỆN ---
 @app.get("/")
@@ -1561,6 +1571,40 @@ def _analyze_particle_image(
         for p in particles
     ]
 
+    # 5-IX — Tính toán tất cả các ngưỡng (Otsu, Triangle, Adaptive Gaussian, Manual)
+    gray = _to_grayscale(img_bgr)
+    blurred_for_thresh = cv2.GaussianBlur(gray, (5, 5), sigmaX=1)
+    otsu_calc_val, _ = cv2.threshold(blurred_for_thresh, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    tri_calc_val, _ = cv2.threshold(blurred_for_thresh, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_TRIANGLE)
+    local_means = cv2.GaussianBlur(blurred_for_thresh, (11, 11), sigmaX=0)
+    adaptive_mean = round(float(np.mean(local_means) - 2), 1)
+
+    thresholds_dict = {
+        "selected_method": (method or "otsu").strip().lower(),
+        "otsu": int(round(otsu_calc_val)),
+        "triangle": int(round(tri_calc_val)),
+        "adaptive": float(np.clip(adaptive_mean, 0, 255)),
+        "manual": int(np.clip(threshold, 1, 254)),
+    }
+
+    fg_mask = markers > 1
+    last_particle_gray_data["gray"] = gray
+    last_particle_gray_data["fg_mask"] = fg_mask
+    last_particle_gray_data["thresholds"] = thresholds_dict
+
+    histogram_b64 = _generate_grayscale_histogram(
+        gray, thresholds=thresholds_dict, mode="all", fg_mask=fg_mask
+    )
+    gray_stats = {
+        "total_pixels": int(gray.size),
+        "mean": round(float(np.mean(gray)), 1),
+        "median": round(float(np.median(gray)), 1),
+        "std": round(float(np.std(gray)), 1),
+        "min": int(np.min(gray)),
+        "max": int(np.max(gray)),
+        "thresholds": thresholds_dict,
+    }
+
     processing_ms = round((time.perf_counter() - started_at) * 1000.0, 1)
 
     return {
@@ -1571,6 +1615,8 @@ def _analyze_particle_image(
         "total_area_px": total_area,
         "result_image_b64": result_b64,
         "dist_image_b64": dist_b64,
+        "histogram_b64": histogram_b64,
+        "gray_stats": gray_stats,
         "particles": particles_json,
         "image_width": int(img_bgr.shape[1]),
         "image_height": int(img_bgr.shape[0]),
@@ -1580,6 +1626,295 @@ def _analyze_particle_image(
         "distance_factor": round(float(np.clip(distance_factor, 0.05, 0.95)), 2),
         "min_area": max(1, int(min_area)),
     }
+
+
+# ---------------------------------------------------------------------------
+# HÀM TIỆN ÍCH 5J: VẼ BIỂU ĐỒ PHỔ MỨC XÁM & ĐỐI CHIẾU CÁC NGƯỠNG PHÂN ĐOẠN (MATPLOTLIB)
+# ---------------------------------------------------------------------------
+def _generate_grayscale_histogram(
+    gray: np.ndarray,
+    thresholds: dict = None,
+    mode: str = "all",
+    fg_mask: np.ndarray = None,
+) -> str:
+    """
+    Vẽ biểu đồ phổ mức xám pixel và đối chiếu các ngưỡng phân đoạn:
+    Otsu, Triangle, Adaptive Gaussian & Manual bằng Matplotlib.
+    
+    Hỗ trợ các chế độ mode:
+      - 'all'        : Phổ mức xám toàn bộ pixel của ảnh (0 - 255)
+      - 'foreground' : Phổ mức xám các pixel thuộc vùng hạt/vật thể
+      - 'comparison' : So sánh trực quan phân bố mức xám giữa Vùng hạt và Vùng nền
+      
+    Trả về chuỗi base64 của ảnh PNG sẵn sàng nhúng vào thẻ <img>.
+    """
+    mode = (mode or "all").strip().lower()
+    if mode not in {"all", "foreground", "comparison"}:
+        mode = "all"
+
+    thresholds = thresholds or {}
+    selected_method = thresholds.get("selected_method", "otsu")
+
+    fig, ax = plt.subplots(figsize=(9.6, 3.6), dpi=110)
+    fig.patch.set_facecolor("#ffffff")
+    ax.set_facecolor("#f8fafc")
+
+    if gray is None or gray.size == 0:
+        ax.text(
+            0.5, 0.5,
+            "Chưa có dữ liệu pixel để vẽ phổ mức xám.",
+            horizontalalignment="center",
+            verticalalignment="center",
+            fontsize=11,
+            fontweight="bold",
+            color="#64748b",
+            transform=ax.transAxes,
+        )
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_color("#cbd5e1")
+        plt.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+        plt.close(fig)
+        return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    x = np.arange(256)
+
+    if mode == "comparison" and fg_mask is not None and fg_mask.any():
+        fg_pixels = gray[fg_mask]
+        bg_pixels = gray[~fg_mask]
+        counts_fg, _ = np.histogram(fg_pixels, bins=256, range=(0, 256))
+        counts_bg, _ = np.histogram(bg_pixels, bins=256, range=(0, 256))
+
+        ax.fill_between(x, counts_fg, color="#0d9488", alpha=0.65, label=f"Vùng hạt ({len(fg_pixels):,} px)")
+        ax.plot(x, counts_fg, color="#0f766e", linewidth=1.1)
+        ax.fill_between(x, counts_bg, color="#64748b", alpha=0.35, label=f"Vùng nền ({len(bg_pixels):,} px)")
+        ax.plot(x, counts_bg, color="#475569", linewidth=1.0)
+        ax.set_title("Phổ phân bố mức xám: So sánh Vùng hạt vs Vùng nền", fontsize=10.5, fontweight="bold", color="#0f172a", pad=9)
+    elif mode == "foreground" and fg_mask is not None and fg_mask.any():
+        fg_pixels = gray[fg_mask]
+        counts, _ = np.histogram(fg_pixels, bins=256, range=(0, 256))
+        ax.bar(x, counts, width=1.0, color="#0d9488", edgecolor="none", alpha=0.85, label=f"Pixel hạt ({len(fg_pixels):,} px)")
+        ax.set_title("Phổ phân bố mức xám các pixel vùng hạt (Foreground)", fontsize=10.5, fontweight="bold", color="#0f172a", pad=9)
+    else:
+        counts, _ = np.histogram(gray, bins=256, range=(0, 256))
+        ax.bar(x, counts, width=1.0, color="#0d9488", edgecolor="none", alpha=0.78, label=f"Tần suất pixel ({gray.size:,} px)")
+        ax.set_title("Phổ phân bố mức xám & Đối chiếu các ngưỡng phân đoạn ảnh", fontsize=10.5, fontweight="bold", color="#0f172a", pad=9)
+
+    # -----------------------------------------------------------------------
+    # ĐỐI CHIẾU CÁC NGƯỠNG PHÂN ĐOẠN (Otsu, Triangle, Adaptive Gaussian, Manual)
+    # -----------------------------------------------------------------------
+    # 1. Ngưỡng Otsu
+    otsu_val = thresholds.get("otsu")
+    if otsu_val is not None and 0 < otsu_val < 255:
+        is_sel = selected_method == "otsu"
+        ax.axvline(
+            otsu_val, color="#2563eb",
+            linestyle="-" if is_sel else "--",
+            linewidth=2.0 if is_sel else 1.3,
+            label=f"Otsu: {otsu_val}" + (" [Đang dùng]" if is_sel else ""),
+            alpha=0.95
+        )
+
+    # 2. Ngưỡng Triangle
+    tri_val = thresholds.get("triangle")
+    if tri_val is not None and 0 < tri_val < 255:
+        is_sel = selected_method == "triangle"
+        ax.axvline(
+            tri_val, color="#7c3aed",
+            linestyle="-" if is_sel else "-.",
+            linewidth=2.0 if is_sel else 1.3,
+            label=f"Triangle: {tri_val}" + (" [Đang dùng]" if is_sel else ""),
+            alpha=0.95
+        )
+
+    # 3. Ngưỡng Adaptive Gaussian (Mean)
+    adapt_val = thresholds.get("adaptive")
+    if adapt_val is not None and 0 < adapt_val < 255:
+        is_sel = selected_method == "adaptive"
+        ax.axvline(
+            adapt_val, color="#059669",
+            linestyle="-" if is_sel else ":",
+            linewidth=2.0 if is_sel else 1.4,
+            label=f"Adaptive TB: {adapt_val}" + (" [Đang dùng]" if is_sel else ""),
+            alpha=0.95
+        )
+
+    # 4. Ngưỡng Manual
+    manual_val = thresholds.get("manual")
+    if manual_val is not None and 0 < manual_val < 255:
+        is_sel = selected_method == "manual"
+        ax.axvline(
+            manual_val, color="#e11d48",
+            linestyle="-" if is_sel else "--",
+            linewidth=2.0 if is_sel else 1.3,
+            label=f"Manual: {manual_val}" + (" [Đang dùng]" if is_sel else ""),
+            alpha=0.95
+        )
+
+    ax.set_xlim(0, 255)
+    ax.set_xlabel("Mức xám pixel (0: Đen / Tối  →  255: Trắng / Sáng)", fontsize=8.5, fontweight="bold", color="#334155")
+    ax.set_ylabel("Số lượng pixel", fontsize=8.5, fontweight="bold", color="#334155")
+    ax.grid(True, linestyle="--", alpha=0.45, color="#cbd5e1")
+    ax.legend(frameon=True, facecolor="#ffffff", edgecolor="#e2e8f0", fontsize=7.2, loc="upper right", ncol=2)
+
+    for spine in ax.spines.values():
+        spine.set_color("#cbd5e1")
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    x = np.arange(256)
+
+    if mode == "comparison" and fg_mask is not None and fg_mask.any():
+        fg_pixels = gray[fg_mask]
+        bg_pixels = gray[~fg_mask]
+        counts_fg, _ = np.histogram(fg_pixels, bins=256, range=(0, 256))
+        counts_bg, _ = np.histogram(bg_pixels, bins=256, range=(0, 256))
+
+        ax.fill_between(x, counts_fg, color="#0d9488", alpha=0.65, label=f"Vùng hạt ({len(fg_pixels):,} px)")
+        ax.plot(x, counts_fg, color="#0f766e", linewidth=1.1)
+        ax.fill_between(x, counts_bg, color="#64748b", alpha=0.35, label=f"Vùng nền ({len(bg_pixels):,} px)")
+        ax.plot(x, counts_bg, color="#475569", linewidth=1.0)
+        ax.set_title("So sánh tần suất mức xám: Vùng hạt vs Vùng nền", fontsize=10.5, fontweight="bold", color="#0f172a", pad=8)
+    elif mode == "foreground" and fg_mask is not None and fg_mask.any():
+        fg_pixels = gray[fg_mask]
+        counts, _ = np.histogram(fg_pixels, bins=256, range=(0, 256))
+        ax.bar(x, counts, width=1.0, color="#0d9488", edgecolor="none", alpha=0.85)
+        ax.set_title("Tần suất các mức xám pixel vùng hạt (Foreground)", fontsize=10.5, fontweight="bold", color="#0f172a", pad=8)
+    else:
+        counts, _ = np.histogram(gray, bins=256, range=(0, 256))
+        ax.bar(x, counts, width=1.0, color="#0d9488", edgecolor="none", alpha=0.85)
+        ax.set_title("Tần suất các mức xám pixel ảnh (Grayscale Histogram)", fontsize=10.5, fontweight="bold", color="#0f172a", pad=8)
+
+    # Vạch chỉ báo thống kê mức xám (Mean, Median, Threshold)
+    target_data = gray[fg_mask] if (mode == "foreground" and fg_mask is not None and fg_mask.any()) else gray
+    mean_val = float(np.mean(target_data))
+    median_val = float(np.median(target_data))
+
+    ax.axvline(mean_val, color="#e11d48", linestyle="--", linewidth=1.4, label=f"Mức xám TB: {mean_val:.1f}", alpha=0.9)
+    ax.axvline(median_val, color="#d97706", linestyle=":", linewidth=1.5, label=f"Trung vị: {median_val:.1f}", alpha=0.9)
+    if threshold is not None and 0 < threshold < 255:
+        ax.axvline(threshold, color="#2563eb", linestyle="-.", linewidth=1.4, label=f"Ngưỡng: {threshold}", alpha=0.95)
+
+    ax.set_xlim(0, 255)
+    ax.set_xlabel("Mức xám (0: Đen / Tối  →  255: Trắng / Sáng)", fontsize=8.5, fontweight="bold", color="#334155")
+    ax.set_ylabel("Số lượng pixel (Tần suất)", fontsize=8.5, fontweight="bold", color="#334155")
+    ax.grid(True, linestyle="--", alpha=0.45, color="#cbd5e1")
+    ax.legend(frameon=True, facecolor="#ffffff", edgecolor="#e2e8f0", fontsize=7.8, loc="upper right")
+    for spine in ax.spines.values():
+        spine.set_color("#cbd5e1")
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    areas = np.array([p["area_px"] for p in particles], dtype=np.float64)
+    diameters = np.array([p["equiv_diameter_px"] for p in particles], dtype=np.float64)
+    circularities = np.array([p["circularity"] for p in particles], dtype=np.float64)
+
+    def draw_hist(ax, data, title, xlabel, color_fill, color_edge, unit=""):
+        ax.set_facecolor("#f8fafc")
+        n_samples = len(data)
+        
+        # Tự động tính số bin theo Freedman-Diaconis / Sturges
+        q75, q25 = np.percentile(data, [75, 25])
+        iqr = q75 - q25
+        if iqr > 0:
+            h = 2.0 * iqr * (n_samples ** (-1.0 / 3.0))
+            nbins = int(np.clip(np.ceil((data.max() - data.min()) / max(h, 1e-4)), 6, 25))
+        else:
+            nbins = int(np.clip(np.ceil(np.sqrt(n_samples)), 6, 20))
+        
+        counts, bins, _ = ax.hist(
+            data,
+            bins=nbins,
+            color=color_fill,
+            edgecolor=color_edge,
+            linewidth=1.0,
+            alpha=0.82,
+            rwidth=0.88,
+        )
+        
+        mean_val = float(np.mean(data))
+        median_val = float(np.median(data))
+        
+        # Đường kẻ gióng giá trị Trung bình (Mean) và Trung vị (Median)
+        ax.axvline(
+            mean_val,
+            color="#e11d48",
+            linestyle="--",
+            linewidth=1.5,
+            label=f"Mean: {mean_val:.1f}{unit}",
+            alpha=0.9,
+        )
+        ax.axvline(
+            median_val,
+            color="#d97706",
+            linestyle=":",
+            linewidth=1.6,
+            label=f"Median: {median_val:.1f}{unit}",
+            alpha=0.9,
+        )
+
+        ax.set_title(title, fontsize=10.5, fontweight="bold", color="#0f172a", pad=8)
+        ax.set_xlabel(xlabel, fontsize=8.5, fontweight="bold", color="#334155")
+        ax.set_ylabel("Tần suất (Số lượng hạt)", fontsize=8.5, fontweight="bold", color="#334155")
+        ax.grid(True, linestyle="--", alpha=0.45, color="#cbd5e1")
+        ax.legend(
+            frameon=True,
+            facecolor="#ffffff",
+            edgecolor="#e2e8f0",
+            fontsize=7.8,
+            loc="upper right",
+        )
+        
+        for spine in ax.spines.values():
+            spine.set_color("#cbd5e1")
+
+    if metric == "combined":
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10.5, 3.6), dpi=110)
+        fig.patch.set_facecolor("#ffffff")
+        draw_hist(
+            ax1, areas, "Phân bố diện tích hạt", "Diện tích (px²)", "#0d9488", "#042f2e", " px²"
+        )
+        draw_hist(
+            ax2, diameters, "Phân bố đường kính tương đương", "Đường kính (px)", "#2563eb", "#1e3a8a", " px"
+        )
+        plt.tight_layout()
+    elif metric == "area":
+        fig, ax = plt.subplots(figsize=(8.5, 3.4), dpi=110)
+        fig.patch.set_facecolor("#ffffff")
+        draw_hist(
+            ax, areas, "Phân bố diện tích hạt tế bào (Particle Area)", "Diện tích hạt (px²)", "#0d9488", "#042f2e", " px²"
+        )
+        plt.tight_layout()
+    elif metric == "diameter":
+        fig, ax = plt.subplots(figsize=(8.5, 3.4), dpi=110)
+        fig.patch.set_facecolor("#ffffff")
+        draw_hist(
+            ax, diameters, "Phân bố đường kính tương đương (Equivalent Diameter)", "Đường kính (px)", "#2563eb", "#1e3a8a", " px"
+        )
+        plt.tight_layout()
+    elif metric == "circularity":
+        fig, ax = plt.subplots(figsize=(8.5, 3.4), dpi=110)
+        fig.patch.set_facecolor("#ffffff")
+        draw_hist(
+            ax, circularities, "Phân bố độ tròn hạt (Circularity: 1 = tròn hoàn hảo)", "Độ tròn (0 – 1)", "#7c3aed", "#4c1d95", ""
+        )
+        plt.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
 def _build_particle_csv(
@@ -1730,6 +2065,55 @@ async def particle_export_csv(
             "Content-Disposition": "attachment; filename=\"particle_measurements.csv\""
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# ROUTE 5C: API VẼ PHỔ MỨC XÁM & ĐỐI CHIẾU NGƯỠNG BẰNG MATPLOTLIB
+# ---------------------------------------------------------------------------
+@app.post("/api/particle-histogram")
+async def particle_histogram(request: Request):
+    """
+    Vẽ lại biểu đồ phổ mức xám & đối chiếu ngưỡng nhị phân Matplotlib:
+    mode: 'all' (toàn ảnh) | 'foreground' (vùng hạt) | 'comparison' (so sánh hạt vs nền)
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    mode = body.get("mode", "all")
+    
+    gray = last_particle_gray_data.get("gray")
+    fg_mask = last_particle_gray_data.get("fg_mask")
+    thresholds = last_particle_gray_data.get("thresholds", {})
+
+    histogram_b64 = await run_in_threadpool(
+        _generate_grayscale_histogram,
+        gray,
+        thresholds,
+        mode,
+        fg_mask
+    )
+
+    if gray is not None and gray.size > 0:
+        target_pixels = gray[fg_mask] if (mode == "foreground" and fg_mask is not None and fg_mask.any()) else gray
+        gray_stats = {
+            "total_pixels": int(target_pixels.size),
+            "mean": round(float(np.mean(target_pixels)), 1),
+            "median": round(float(np.median(target_pixels)), 1),
+            "std": round(float(np.std(target_pixels)), 1),
+            "min": int(np.min(target_pixels)),
+            "max": int(np.max(target_pixels)),
+            "thresholds": thresholds,
+        }
+    else:
+        gray_stats = {}
+
+    return JSONResponse(content={
+        "status": "success",
+        "histogram_b64": histogram_b64,
+        "mode": mode,
+        "gray_stats": gray_stats,
+    })
 
 
 if __name__ == "__main__":

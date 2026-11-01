@@ -534,6 +534,72 @@
 									</div>
 								</div>
 
+																																<!-- KHU VỰC BIỂU ĐỒ PHỔ MỨC XÁM & ĐỐI CHIẾU NGƯỠNG (MATPLOTLIB) -->
+								<div class="particle-histogram-card" id="particleHistogramCard">
+									<div class="histogram-header-bar">
+										<div class="histogram-header-left">
+											<span class="histogram-icon" aria-hidden="true">
+												<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+													<line x1="18" y1="20" x2="18" y2="10"></line>
+													<line x1="12" y1="20" x2="12" y2="4"></line>
+													<line x1="6" y1="20" x2="6" y2="14"></line>
+													<line x1="2" y1="20" x2="22" y2="20"></line>
+												</svg>
+											</span>
+											<div>
+												<div class="histogram-title-row">
+													<span class="histogram-title">Phổ phân bố mức xám &amp; Đối chiếu ngưỡng (Threshold Analysis)</span>
+													<span class="chip chip-teal">Matplotlib</span>
+												</div>
+												<span class="histogram-subtitle" id="histogramMetricLabel">Đối chiếu trực quan phổ pixel cùng 4 phương pháp ngưỡng: Otsu, Triangle, Adaptive Gaussian &amp; Manual</span>
+											</div>
+										</div>
+
+										<div class="histogram-header-actions">
+											<div class="histogram-view-toggle" id="histogramViewToggle" role="tablist" aria-label="Chọn chế độ hiển thị phổ mức xám">
+												<button type="button" class="hist-toggle-btn is-active" data-hist-mode="all" title="Toàn bộ pixel của ảnh">Toàn ảnh</button>
+												<button type="button" class="hist-toggle-btn" data-hist-mode="foreground" title="Pixel thuộc vùng hạt">Vùng hạt</button>
+												<button type="button" class="hist-toggle-btn" data-hist-mode="comparison" title="So sánh phân bố mức xám hạt vs nền">Hạt &amp; Nền</button>
+											</div>
+											<button id="btnDownloadHistogram" type="button" class="table-action-btn export-chart-btn" title="Tải xuống ảnh biểu đồ PNG" hidden>
+												<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+													<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+													<polyline points="7 10 12 15 17 10"></polyline>
+													<line x1="12" y1="15" x2="12" y2="3"></line>
+												</svg>
+												<span>Tải biểu đồ</span>
+											</button>
+										</div>
+									</div>
+
+									<div class="histogram-body" id="histogramBody">
+										<!-- Placeholder khi chưa có dữ liệu -->
+										<div class="histogram-empty-box" id="histogramPlaceholder">
+											<span class="empty-histogram-icon">📊</span>
+											<div class="empty-histogram-title">Chưa có dữ liệu phân tích phổ mức xám</div>
+											<div class="empty-histogram-sub">
+												Nhấn nút <strong>"Thực hiện đếm hạt"</strong> để Matplotlib vẽ biểu đồ phổ mức xám và đối chiếu 4 phương pháp ngưỡng phân đoạn.
+											</div>
+										</div>
+
+										<!-- Ảnh histogram kết quả -->
+										<div class="histogram-chart-wrapper" id="histogramChartWrapper" hidden>
+											<img id="particleHistogramImg" class="histogram-chart-img" alt="Biểu đồ phổ phân bố mức xám và đối chiếu ngưỡng vẽ bởi Matplotlib" />
+										</div>
+									</div>
+
+									<!-- Thanh thống kê và đối chiếu 4 ngưỡng dưới biểu đồ -->
+									<div class="histogram-stats-footer" id="histogramStatsFooter" hidden>
+										<div class="stat-badge"><span class="stat-label">Tổng pixel:</span> <strong id="histStatN">--</strong></div>
+										<div class="stat-badge"><span class="stat-label">Mức xám TB μ:</span> <strong id="histStatMean">--</strong></div>
+										<div class="stat-badge badge-otsu" title="Ngưỡng tự động tối ưu Otsu"><span class="stat-label">Otsu:</span> <strong id="histStatOtsu">--</strong></div>
+										<div class="stat-badge badge-triangle" title="Ngưỡng tam giác Triangle"><span class="stat-label">Triangle:</span> <strong id="histStatTriangle">--</strong></div>
+										<div class="stat-badge badge-adaptive" title="Ngưỡng thích nghi Adaptive Gaussian (Trung bình)"><span class="stat-label">Adaptive TB:</span> <strong id="histStatAdaptive">--</strong></div>
+										<div class="stat-badge badge-manual" title="Ngưỡng tùy chỉnh Manual"><span class="stat-label">Manual:</span> <strong id="histStatManual">--</strong></div>
+										<div class="stat-badge"><span class="stat-label">Dải [Min, Max]:</span> <strong id="histStatRange">--</strong></div>
+									</div>
+								</div>
+
 								<!-- BẢNG DỮ LIỆU SỐ CHI TIẾT TỪNG HẠT -->
 								<div class="particle-table-container">
 									<div class="table-header-bar">
