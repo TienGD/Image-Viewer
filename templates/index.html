@@ -376,6 +376,21 @@
 												<div class="config-item-sub" id="wsMethodHint">Otsu tự động tìm ngưỡng tối ưu cho ảnh nền sáng, vật thể tối.</div>
 											</div>
 
+											<!-- TÙY CHỌN HẰNG SỐ C CHO ADAPTIVE GAUSSIAN -->
+											<div class="config-item" id="wsAdaptiveCItem" hidden>
+												<div class="config-label-row">
+													<label for="wsAdaptiveCSlider">Hằng số bù ngưỡng C</label>
+													<span id="wsAdaptiveCVal" class="slider-val-badge">2</span>
+												</div>
+												<input id="wsAdaptiveCSlider" class="styled-range" type="range" min="-10" max="10" step="1" value="2" aria-label="Hằng số C trong Adaptive Gaussian" />
+												<div class="slider-hints">
+													<span>-10 (Lấy nhiều chi tiết)</span>
+													<span>2 (Mặc định)</span>
+													<span>+10 (Lọc khắt khe)</span>
+												</div>
+												<div class="config-item-sub config-item-note">Trừ bớt giá trị trung bình Gauss: <strong>T(x,y) = μ − C</strong>. Càng nhỏ lấy càng nhiều hạt; càng lớn lọc càng chặt.</div>
+											</div>
+
 											<div class="config-item" id="wsThresholdItem">
 												<div class="config-label-row">
 													<label for="wsThresholdSlider">Ngưỡng nhị phân</label>
@@ -534,11 +549,11 @@
 									</div>
 								</div>
 
-																																<!-- KHU VỰC BIỂU ĐỒ PHỔ MỨC XÁM & ĐỐI CHIẾU NGƯỠNG (MATPLOTLIB) -->
+																																<!-- KHU VỰC BIỂU ĐỒ PHỔ MỨC XÁM / BẢN ĐỒ NHIỆT (MATPLOTLIB) -->
 								<div class="particle-histogram-card" id="particleHistogramCard">
 									<div class="histogram-header-bar">
 										<div class="histogram-header-left">
-											<span class="histogram-icon" aria-hidden="true">
+											<span class="histogram-icon" id="chartTypeIcon" aria-hidden="true">
 												<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
 													<line x1="18" y1="20" x2="18" y2="10"></line>
 													<line x1="12" y1="20" x2="12" y2="4"></line>
@@ -548,10 +563,10 @@
 											</span>
 											<div>
 												<div class="histogram-title-row">
-													<span class="histogram-title">Phổ phân bố mức xám &amp; Đối chiếu ngưỡng (Threshold Analysis)</span>
-													<span class="chip chip-teal">Matplotlib</span>
+													<span class="histogram-title" id="histogramChartTitle">Phổ phân bố mức xám &amp; Đối chiếu ngưỡng (Threshold Analysis)</span>
+													<span class="chip chip-teal" id="histogramChip">Matplotlib</span>
 												</div>
-												<span class="histogram-subtitle" id="histogramMetricLabel">Đối chiếu trực quan phổ pixel cùng 4 phương pháp ngưỡng: Otsu, Triangle, Adaptive Gaussian &amp; Manual</span>
+												<span class="histogram-subtitle" id="histogramMetricLabel">Đối chiếu trực quan phổ pixel cùng các phương pháp ngưỡng: Otsu, Triangle &amp; Manual</span>
 											</div>
 										</div>
 
@@ -561,42 +576,82 @@
 												<button type="button" class="hist-toggle-btn" data-hist-mode="foreground" title="Pixel thuộc vùng hạt">Vùng hạt</button>
 												<button type="button" class="hist-toggle-btn" data-hist-mode="comparison" title="So sánh phân bố mức xám hạt vs nền">Hạt &amp; Nền</button>
 											</div>
+											<div class="heatmap-indicator-pill" id="heatmapIndicatorPill" hidden>
+												<span class="chip chip-purple">🔥 Ma trận ngưỡng T(x, y)</span>
+											</div>
 											<button id="btnDownloadHistogram" type="button" class="table-action-btn export-chart-btn" title="Tải xuống ảnh biểu đồ PNG" hidden>
 												<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
 													<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
 													<polyline points="7 10 12 15 17 10"></polyline>
 													<line x1="12" y1="15" x2="12" y2="3"></line>
 												</svg>
-												<span>Tải biểu đồ</span>
+												<span id="btnDownloadChartText">Tải biểu đồ</span>
 											</button>
+										</div>
+									</div>
+
+									<!-- KHỐI THÔNG TIN HỌC THUẬT BẢN ĐỒ NHIỆT ADAPTIVE GAUSSIAN (Hiển thị khi chọn ngưỡng Adaptive) -->
+									<div class="heatmap-explanation-box" id="heatmapExplanationBox" hidden>
+										<div class="heatmap-expl-header">
+											<span class="heatmap-expl-icon">🔥</span>
+											<span class="heatmap-expl-title">Bản đồ nhiệt ngưỡng cục bộ T(x, y) — Adaptive Gaussian</span>
+										</div>
+										<p class="heatmap-expl-desc">
+											Bản đồ nhiệt (heatmap) thể hiện sự phân bố và biến thiên của các mức ngưỡng cục bộ <strong>T(x,y)</strong> đã được thuật toán tính toán riêng cho từng điểm ảnh trên không gian bức hình. Bằng cách ánh xạ giá trị số học (0-255) sang một thang màu trực quan, bản đồ này cho thấy cách thuật toán tự động nới lỏng hay siết chặt tiêu chuẩn phân tách để thích nghi với tình trạng chiếu sáng của ảnh gốc.
+										</p>
+										<div class="heatmap-expl-grid">
+											<div class="heatmap-expl-card card-hot">
+												<div class="heatmap-card-tag hot-tag">🔴 Vùng màu nóng (Đỏ / Vàng)</div>
+												<div class="heatmap-card-content">
+													Đại diện cho các mức ngưỡng được đẩy lên rất cao. Thuật toán tự động nâng cao tiêu chuẩn tại những khu vực ảnh gốc có cường độ sáng mạnh hoặc bị chói, đảm bảo chỉ những chi tiết thực sự nổi bật mới được biến thành màu trắng, tránh hiện tượng cháy sáng mảng lớn.
+												</div>
+											</div>
+											<div class="heatmap-expl-card card-cold">
+												<div class="heatmap-card-tag cold-tag">🔵 Vùng màu lạnh (Xanh lam / Xanh lục)</div>
+												<div class="heatmap-card-content">
+													Đại diện cho các mức ngưỡng bị kéo xuống thấp. Thuật toán chủ động hạ tiêu chuẩn phân tách tại những khu vực ảnh gốc bị đổ bóng hoặc thiếu sáng sâu, cho phép bóc tách thành công các cấu trúc mờ nhạt nằm ẩn trong vùng tối mà các ngưỡng toàn cục cứng nhắc chắc chắn sẽ đánh mất.
+												</div>
+											</div>
+										</div>
+										<div class="heatmap-expl-conclusion">
+											<span class="conclusion-icon">💡</span>
+											<span>Sự chuyển đổi màu sắc liên tục trên heatmap chứng minh Adaptive Gaussian tạo ra một mặt phẳng ngưỡng uốn lượn linh hoạt, bám sát theo chính địa hình độ sáng thực tế của bức ảnh.</span>
 										</div>
 									</div>
 
 									<div class="histogram-body" id="histogramBody">
 										<!-- Placeholder khi chưa có dữ liệu -->
 										<div class="histogram-empty-box" id="histogramPlaceholder">
-											<span class="empty-histogram-icon">📊</span>
-											<div class="empty-histogram-title">Chưa có dữ liệu phân tích phổ mức xám</div>
-											<div class="empty-histogram-sub">
-												Nhấn nút <strong>"Thực hiện đếm hạt"</strong> để Matplotlib vẽ biểu đồ phổ mức xám và đối chiếu 4 phương pháp ngưỡng phân đoạn.
+											<span class="empty-histogram-icon" id="histogramEmptyIcon">📊</span>
+											<div class="empty-histogram-title" id="histogramEmptyTitle">Chưa có dữ liệu phân tích phổ mức xám</div>
+											<div class="empty-histogram-sub" id="histogramEmptySub">
+												Nhấn nút <strong>"Thực hiện đếm hạt"</strong> để Matplotlib vẽ biểu đồ phổ mức xám và đối chiếu các phương pháp ngưỡng phân đoạn.
 											</div>
 										</div>
 
-										<!-- Ảnh histogram kết quả -->
+										<!-- Ảnh biểu đồ / heatmap kết quả -->
 										<div class="histogram-chart-wrapper" id="histogramChartWrapper" hidden>
-											<img id="particleHistogramImg" class="histogram-chart-img" alt="Biểu đồ phổ phân bố mức xám và đối chiếu ngưỡng vẽ bởi Matplotlib" />
+											<img id="particleHistogramImg" class="histogram-chart-img" alt="Biểu đồ phân tích vẽ bởi Matplotlib" />
 										</div>
 									</div>
 
-									<!-- Thanh thống kê và đối chiếu 4 ngưỡng dưới biểu đồ -->
+									<!-- Thanh thống kê và đối chiếu các ngưỡng cho Histogram -->
 									<div class="histogram-stats-footer" id="histogramStatsFooter" hidden>
 										<div class="stat-badge"><span class="stat-label">Tổng pixel:</span> <strong id="histStatN">--</strong></div>
 										<div class="stat-badge"><span class="stat-label">Mức xám TB μ:</span> <strong id="histStatMean">--</strong></div>
 										<div class="stat-badge badge-otsu" title="Ngưỡng tự động tối ưu Otsu"><span class="stat-label">Otsu:</span> <strong id="histStatOtsu">--</strong></div>
 										<div class="stat-badge badge-triangle" title="Ngưỡng tam giác Triangle"><span class="stat-label">Triangle:</span> <strong id="histStatTriangle">--</strong></div>
-										<div class="stat-badge badge-adaptive" title="Ngưỡng thích nghi Adaptive Gaussian (Trung bình)"><span class="stat-label">Adaptive TB:</span> <strong id="histStatAdaptive">--</strong></div>
 										<div class="stat-badge badge-manual" title="Ngưỡng tùy chỉnh Manual"><span class="stat-label">Manual:</span> <strong id="histStatManual">--</strong></div>
 										<div class="stat-badge"><span class="stat-label">Dải [Min, Max]:</span> <strong id="histStatRange">--</strong></div>
+									</div>
+
+									<!-- Thanh thống kê riêng cho Bản đồ nhiệt Heatmap -->
+									<div class="histogram-stats-footer heatmap-stats-footer" id="heatmapStatsFooter" hidden>
+										<div class="stat-badge"><span class="stat-label">Cửa sổ cục bộ:</span> <strong>11×11 (<span id="heatStatC">C = 2</span>)</strong></div>
+										<div class="stat-badge"><span class="stat-label">Ngưỡng TB T_mean:</span> <strong id="heatStatMean">--</strong></div>
+										<div class="stat-badge"><span class="stat-label">Trung vị T_med:</span> <strong id="heatStatMedian">--</strong></div>
+										<div class="stat-badge"><span class="stat-label">Độ lệch chuẩn σ:</span> <strong id="heatStatStd">--</strong></div>
+										<div class="stat-badge"><span class="stat-label">Dải [T_min, T_max]:</span> <strong id="heatStatRange">--</strong></div>
 									</div>
 								</div>
 

@@ -3236,3 +3236,134 @@ input[type="range"]:disabled::-webkit-slider-thumb {
 		transition-duration: 0.001ms !important;
 	}
 }
+
+
+/* ==========================================================================
+   BẢN ĐỒ NHIỆT ADAPTIVE GAUSSIAN (HEATMAP) & EXPLANATION BOX
+   ========================================================================== */
+.chip.chip-purple {
+	background: #f3e8ff;
+	color: #7e22ce;
+	border: 1px solid #e9d5ff;
+}
+
+.heatmap-indicator-pill {
+	display: inline-flex;
+	align-items: center;
+}
+
+.heatmap-explanation-box {
+	margin: 0;
+	padding: 13px 18px 15px;
+	background: #f8fafc;
+	border-bottom: 1px solid var(--line-soft);
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	animation: fadeIn 0.25s ease-out;
+}
+
+.heatmap-expl-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.heatmap-expl-icon {
+	font-size: 1.1rem;
+	line-height: 1;
+}
+
+.heatmap-expl-title {
+	font-size: 0.84rem;
+	font-weight: 800;
+	color: var(--ink-900);
+	letter-spacing: -0.01em;
+}
+
+.heatmap-expl-desc {
+	font-size: 0.74rem;
+	line-height: 1.55;
+	color: var(--ink-700);
+	margin: 0;
+}
+
+.heatmap-expl-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 12px;
+	margin-top: 2px;
+}
+
+@media (max-width: 768px) {
+	.heatmap-expl-grid {
+		grid-template-columns: 1fr;
+	}
+}
+
+.heatmap-expl-card {
+	padding: 10px 13px;
+	border-radius: 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+}
+
+.heatmap-expl-card.card-hot {
+	background: #fef2f2;
+	border: 1px solid #fee2e2;
+	border-left: 4px solid #ef4444;
+}
+
+.heatmap-expl-card.card-cold {
+	background: #f0fdf4;
+	border: 1px solid #dcfce7;
+	border-left: 4px solid #059669;
+}
+
+.heatmap-card-tag {
+	font-size: 0.73rem;
+	font-weight: 800;
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+}
+
+.heatmap-card-tag.hot-tag {
+	color: #b91c1c;
+}
+
+.heatmap-card-tag.cold-tag {
+	color: #047857;
+}
+
+.heatmap-card-content {
+	font-size: 0.72rem;
+	line-height: 1.48;
+	color: var(--ink-800);
+}
+
+.heatmap-expl-conclusion {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	padding: 9px 13px;
+	background: #f0fdf4;
+	border: 1px solid #bbf7d0;
+	border-radius: 6px;
+	font-size: 0.73rem;
+	line-height: 1.48;
+	color: #166534;
+	font-weight: 600;
+}
+
+.heatmap-expl-conclusion .conclusion-icon {
+	font-size: 0.95rem;
+	flex-shrink: 0;
+	margin-top: -1px;
+}
+
+.heatmap-stats-footer {
+	background: #faf5ff;
+	border-top: 1px solid #f3e8ff;
+}

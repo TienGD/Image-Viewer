@@ -54,6 +54,9 @@ const wsMethodHint = $('wsMethodHint');
 const wsThresholdItem = $('wsThresholdItem');
 const wsThresholdSlider = $('wsThresholdSlider');
 const wsThresholdVal = $('wsThresholdVal');
+const wsAdaptiveCItem = $('wsAdaptiveCItem');
+const wsAdaptiveCSlider = $('wsAdaptiveCSlider');
+const wsAdaptiveCVal = $('wsAdaptiveCVal');
 const wsDistanceSlider = $('wsDistanceSlider');
 const wsDistanceVal = $('wsDistanceVal');
 const wsMinAreaSlider = $('wsMinAreaSlider');
@@ -87,9 +90,26 @@ const histStatMedian = $('histStatMedian');
 const histStatStd = $('histStatStd');
 const histStatOtsu = $('histStatOtsu');
 const histStatTriangle = $('histStatTriangle');
-const histStatAdaptive = $('histStatAdaptive');
 const histStatManual = $('histStatManual');
 const histStatRange = $('histStatRange');
+
+const chartTypeIcon = $('chartTypeIcon');
+const histogramChartTitle = $('histogramChartTitle');
+const histogramChip = $('histogramChip');
+const heatmapIndicatorPill = $('heatmapIndicatorPill');
+const btnDownloadChartText = $('btnDownloadChartText');
+const heatmapExplanationBox = $('heatmapExplanationBox');
+const heatmapStatsFooter = $('heatmapStatsFooter');
+
+const heatStatMean = $('heatStatMean');
+const heatStatMedian = $('heatStatMedian');
+const heatStatStd = $('heatStatStd');
+const heatStatRange = $('heatStatRange');
+const heatStatC = $('heatStatC');
+
+const histogramEmptyIcon = $('histogramEmptyIcon');
+const histogramEmptyTitle = $('histogramEmptyTitle');
+const histogramEmptySub = $('histogramEmptySub');
 
 const numberFormatter = new Intl.NumberFormat('vi-VN', {
 	maximumFractionDigits: 2,
@@ -755,16 +775,51 @@ function syncMethodUI() {
 	if (!wsMethodSelect) return;
 	const method = wsMethodSelect.value || 'otsu';
 	const isManual = method === 'manual';
+	const isAdaptive = method === 'adaptive';
 
 	if (wsMethodHint) {
 		wsMethodHint.textContent = METHOD_HINTS[method] || METHOD_HINTS.otsu;
 	}
+
+	// Hiển thị thanh trượt hằng số C khi chọn Adaptive Gaussian
+	if (wsAdaptiveCItem) {
+		wsAdaptiveCItem.hidden = !isAdaptive;
+		if (isAdaptive && wsAdaptiveCSlider) updateRangeFill(wsAdaptiveCSlider);
+	}
+
+	// Hiển thị / ẩn thanh trượt ngưỡng thủ công khi chọn Manual
 	if (wsThresholdItem) {
+		wsThresholdItem.hidden = !isManual;
 		wsThresholdItem.classList.toggle('is-muted', !isManual);
 	}
 	if (wsThresholdSlider) {
 		wsThresholdSlider.disabled = !isManual;
 		if (!isManual) updateRangeFill(wsThresholdSlider);
+	}
+
+	// Khi chọn ngưỡng Adaptive Gaussian, thay thế biểu đồ histogram bằng bản đồ nhiệt (heatmap)
+	if (isAdaptive) {
+		if (histogramEmptyIcon) histogramEmptyIcon.textContent = '🔥';
+		if (histogramEmptyTitle) histogramEmptyTitle.textContent = 'Chưa có dữ liệu bản đồ nhiệt ngưỡng cục bộ';
+		if (histogramEmptySub) {
+			histogramEmptySub.innerHTML = 'Nhấn nút <strong>"Thực hiện đếm hạt"</strong> để thuật toán Adaptive Gaussian tính toán và hiển thị bản đồ nhiệt ngưỡng T(x,y).';
+		}
+		if (state.heatmapData && state.heatmapData.b64) {
+			displayHeatmap(state.heatmapData.b64, state.heatmapData.stats);
+		} else if (state.particleFile) {
+			fetchAdaptiveHeatmap();
+		}
+	} else {
+		if (histogramEmptyIcon) histogramEmptyIcon.textContent = '📊';
+		if (histogramEmptyTitle) histogramEmptyTitle.textContent = 'Chưa có dữ liệu phân tích phổ mức xám';
+		if (histogramEmptySub) {
+			histogramEmptySub.innerHTML = 'Nhấn nút <strong>"Thực hiện đếm hạt"</strong> để Matplotlib vẽ biểu đồ phổ mức xám và đối chiếu các phương pháp ngưỡng phân đoạn.';
+		}
+		if (state.histogramData && state.histogramData.b64) {
+			displayHistogram(state.histogramData.b64, state.currentHistMode || 'all', state.currentGrayStats);
+		} else if (state.particleFile && state.currentChartType === 'heatmap') {
+			switchHistogramMode(state.currentHistMode || 'all');
+		}
 	}
 }
 
@@ -772,6 +827,8 @@ function resetWatershedParams() {
 	if (wsMethodSelect) wsMethodSelect.value = 'otsu';
 	if (wsThresholdSlider) wsThresholdSlider.value = '128';
 	if (wsThresholdVal) wsThresholdVal.textContent = '128';
+	if (wsAdaptiveCSlider) wsAdaptiveCSlider.value = '2';
+	if (wsAdaptiveCVal) wsAdaptiveCVal.textContent = '2';
 	if (wsDistanceSlider) wsDistanceSlider.value = '0.45';
 	if (wsDistanceVal) wsDistanceVal.textContent = '0.45';
 	if (wsMinAreaSlider) wsMinAreaSlider.value = '20';
@@ -790,6 +847,7 @@ function collectParticleParams() {
 	return {
 		method,
 		threshold: wsThresholdSlider ? wsThresholdSlider.value : '128',
+		adaptive_c: wsAdaptiveCSlider ? wsAdaptiveCSlider.value : '2',
 		distance_factor: wsDistanceSlider ? wsDistanceSlider.value : '0.45',
 		min_area: wsMinAreaSlider ? wsMinAreaSlider.value : '20',
 		show_boundary: chkShowBoundary ? chkShowBoundary.checked : true,
@@ -909,7 +967,6 @@ function renderHistogramStats(stats) {
 		if (histStatMean) histStatMean.textContent = '--';
 		if (histStatOtsu) histStatOtsu.textContent = '--';
 		if (histStatTriangle) histStatTriangle.textContent = '--';
-		if (histStatAdaptive) histStatAdaptive.textContent = '--';
 		if (histStatManual) histStatManual.textContent = '--';
 		if (histStatRange) histStatRange.textContent = '--';
 		document.querySelectorAll('.stat-badge[class*="badge-"]').forEach((b) => b.classList.remove('is-selected-method'));
@@ -926,7 +983,6 @@ function renderHistogramStats(stats) {
 	const th = stats.thresholds || {};
 	if (histStatOtsu) histStatOtsu.textContent = th.otsu != null ? `${th.otsu}` : '--';
 	if (histStatTriangle) histStatTriangle.textContent = th.triangle != null ? `${th.triangle}` : '--';
-	if (histStatAdaptive) histStatAdaptive.textContent = th.adaptive != null ? `${th.adaptive}` : '--';
 	if (histStatManual) histStatManual.textContent = th.manual != null ? `${th.manual}` : '--';
 
 	if (histStatRange) {
@@ -935,7 +991,7 @@ function renderHistogramStats(stats) {
 
 	// Đánh dấu phương pháp ngưỡng đang được áp dụng
 	const activeMethod = th.selected_method || 'otsu';
-	['otsu', 'triangle', 'adaptive', 'manual'].forEach((m) => {
+	['otsu', 'triangle', 'manual'].forEach((m) => {
 		const badge = document.querySelector(`.stat-badge.badge-${m}`);
 		if (badge) {
 			badge.classList.toggle('is-selected-method', activeMethod === m);
@@ -944,21 +1000,113 @@ function renderHistogramStats(stats) {
 }
 
 const HIST_MODE_LABELS = {
-	all: 'Phổ phân bố mức xám toàn bộ pixel ảnh & Đối chiếu 4 phương pháp ngưỡng',
+	all: 'Phổ phân bố mức xám toàn bộ pixel ảnh & Đối chiếu các phương pháp ngưỡng: Otsu, Triangle & Manual',
 	foreground: 'Phổ phân bố mức xám các pixel thuộc vùng hạt (Foreground)',
 	comparison: 'So sánh trực quan phân bố mức xám giữa Vùng hạt và Vùng nền',
 };
 
-function displayHistogram(b64, mode, stats) {
+
+function renderHeatmapStats(stats) {
+	if (!stats || typeof stats !== 'object' || Object.keys(stats).length === 0) {
+		if (heatStatMean) heatStatMean.textContent = '--';
+		if (heatStatMedian) heatStatMedian.textContent = '--';
+		if (heatStatStd) heatStatStd.textContent = '--';
+		if (heatStatRange) heatStatRange.textContent = '--';
+		if (heatStatC) heatStatC.textContent = 'C = 2';
+		return;
+	}
+	if (heatStatMean) heatStatMean.textContent = stats.mean != null ? `${stats.mean}` : '--';
+	if (heatStatMedian) heatStatMedian.textContent = stats.median != null ? `${stats.median}` : '--';
+	if (heatStatStd) heatStatStd.textContent = stats.std != null ? `${stats.std}` : '--';
+	if (heatStatRange) heatStatRange.textContent = stats.min != null && stats.max != null ? `[${stats.min} – ${stats.max}]` : '--';
+	if (heatStatC && stats.c != null) heatStatC.textContent = `C = ${stats.c}`;
+}
+
+function displayHeatmap(b64, stats) {
 	if (!particleHistogramImg) return;
-	state.currentHistMode = mode || 'all';
-	state.currentGrayStats = stats || state.currentGrayStats || {};
+	state.currentChartType = 'heatmap';
+	if (stats) state.heatmapData = { b64, stats };
 
 	particleHistogramImg.src = `data:image/png;base64,${b64}`;
 	if (histogramChartWrapper) histogramChartWrapper.hidden = false;
 	if (histogramPlaceholder) histogramPlaceholder.hidden = true;
-	if (histogramStatsFooter) histogramStatsFooter.hidden = false;
 	if (btnDownloadHistogram) btnDownloadHistogram.hidden = false;
+	if (btnDownloadChartText) btnDownloadChartText.textContent = 'Tải bản đồ nhiệt';
+
+	if (chartTypeIcon) {
+		chartTypeIcon.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"></path></svg>`;
+	}
+	if (histogramChartTitle) {
+		histogramChartTitle.textContent = 'Bản đồ nhiệt phân bố ngưỡng cục bộ T(x, y) (Adaptive Gaussian)';
+	}
+	if (histogramChip) {
+		histogramChip.textContent = 'Heatmap';
+		histogramChip.className = 'chip chip-purple';
+	}
+	if (histogramMetricLabel) {
+		histogramMetricLabel.textContent = 'Trực quan hóa ma trận ngưỡng thích nghi T(x, y) theo địa hình chiếu sáng của ảnh';
+	}
+
+	if (histogramViewToggle) histogramViewToggle.hidden = true;
+	if (heatmapIndicatorPill) heatmapIndicatorPill.hidden = false;
+	if (heatmapExplanationBox) heatmapExplanationBox.hidden = false;
+	if (histogramStatsFooter) histogramStatsFooter.hidden = true;
+	if (heatmapStatsFooter) heatmapStatsFooter.hidden = false;
+
+	renderHeatmapStats(stats || (state.heatmapData && state.heatmapData.stats));
+}
+
+async function fetchAdaptiveHeatmap(cVal) {
+	try {
+		if (histogramChartWrapper) histogramChartWrapper.style.opacity = '0.6';
+		const c = cVal != null ? cVal : (wsAdaptiveCSlider ? wsAdaptiveCSlider.value : 2);
+		const response = await fetch('/api/particle-adaptive-heatmap', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ adaptive_c: c }),
+		});
+		if (!response.ok) return;
+		const data = await response.json();
+		if (data.status === 'success' && data.heatmap_b64) {
+			state.heatmapData = { b64: data.heatmap_b64, stats: data.stats || {} };
+			displayHeatmap(data.heatmap_b64, data.stats || {});
+		}
+	} catch (err) {
+		console.warn('Không thể tải bản đồ nhiệt:', err);
+	} finally {
+		if (histogramChartWrapper) histogramChartWrapper.style.opacity = '1';
+	}
+}
+
+function displayHistogram(b64, mode, stats) {
+	if (!particleHistogramImg) return;
+	state.currentChartType = 'histogram';
+	state.currentHistMode = mode || 'all';
+	state.currentGrayStats = stats || state.currentGrayStats || {};
+	if (b64) state.histogramData = { b64, stats: state.currentGrayStats };
+
+	particleHistogramImg.src = `data:image/png;base64,${b64}`;
+	if (histogramChartWrapper) histogramChartWrapper.hidden = false;
+	if (histogramPlaceholder) histogramPlaceholder.hidden = true;
+	if (btnDownloadHistogram) btnDownloadHistogram.hidden = false;
+	if (btnDownloadChartText) btnDownloadChartText.textContent = 'Tải biểu đồ';
+
+	if (chartTypeIcon) {
+		chartTypeIcon.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line><line x1="2" y1="20" x2="22" y2="20"></line></svg>`;
+	}
+	if (histogramChartTitle) {
+		histogramChartTitle.textContent = 'Phổ phân bố mức xám & Đối chiếu ngưỡng (Threshold Analysis)';
+	}
+	if (histogramChip) {
+		histogramChip.textContent = 'Matplotlib';
+		histogramChip.className = 'chip chip-teal';
+	}
+
+	if (histogramViewToggle) histogramViewToggle.hidden = false;
+	if (heatmapIndicatorPill) heatmapIndicatorPill.hidden = true;
+	if (heatmapExplanationBox) heatmapExplanationBox.hidden = true;
+	if (histogramStatsFooter) histogramStatsFooter.hidden = false;
+	if (heatmapStatsFooter) heatmapStatsFooter.hidden = true;
 
 	updateHistToggleButtons(state.currentHistMode);
 	if (histogramMetricLabel) {
@@ -1017,6 +1165,7 @@ async function runWatershed() {
 	formData.append('threshold', params.threshold);
 	formData.append('distance_factor', params.distance_factor);
 	formData.append('min_area', params.min_area);
+	formData.append('adaptive_c', params.adaptive_c != null ? params.adaptive_c : '2');
 	formData.append('show_boundary', params.show_boundary ? 'true' : 'false');
 	formData.append('show_centroid', params.show_centroid ? 'true' : 'false');
 	formData.append('show_id', params.show_id ? 'true' : 'false');
@@ -1056,6 +1205,7 @@ async function runWatershed() {
 		state.particleParams = {
 			method: params.method,
 			threshold: params.threshold,
+			adaptive_c: params.adaptive_c,
 			distance_factor: params.distance_factor,
 			min_area: params.min_area,
 		};
@@ -1068,7 +1218,12 @@ async function runWatershed() {
 
 		state.currentParticles = data.particles || [];
 		state.histCache = {};
-		if (data.histogram_b64) {
+		if (data.heatmap_b64) {
+			state.heatmapData = { b64: data.heatmap_b64, stats: data.heatmap_stats || {} };
+		}
+		if (data.chart_type === 'heatmap' || params.method === 'adaptive') {
+			displayHeatmap(data.heatmap_b64 || data.histogram_b64, data.heatmap_stats || {});
+		} else if (data.histogram_b64) {
 			state.histCache['all'] = { b64: data.histogram_b64, stats: data.gray_stats || {} };
 			displayHistogram(data.histogram_b64, 'all', data.gray_stats || {});
 		}
@@ -1118,6 +1273,7 @@ async function exportParticleCSV() {
 	formData.append('threshold', state.particleParams.threshold);
 	formData.append('distance_factor', state.particleParams.distance_factor);
 	formData.append('min_area', state.particleParams.min_area);
+	formData.append('adaptive_c', state.particleParams.adaptive_c != null ? state.particleParams.adaptive_c : '2');
 
 	try {
 		const response = await fetch('/api/particle-export-csv', {
@@ -1166,11 +1322,14 @@ if (btnDownloadHistogram) {
 		}
 		const a = document.createElement('a');
 		a.href = particleHistogramImg.src;
-		a.download = `grayscale_histogram_${state.currentHistMode || 'chart'}.png`;
+		const filename = state.currentChartType === 'heatmap'
+			? 'adaptive_gaussian_heatmap_Txy.png'
+			: `grayscale_histogram_${state.currentHistMode || 'chart'}.png`;
+		a.download = filename;
 		document.body.appendChild(a);
 		a.click();
 		document.body.removeChild(a);
-		showToast('✓ Đã tải ảnh biểu đồ histogram (PNG).');
+		showToast(state.currentChartType === 'heatmap' ? '✓ Đã tải bản đồ nhiệt T(x,y)' : '✓ Đã tải biểu đồ phổ mức xám');
 	});
 }
 
@@ -1182,6 +1341,23 @@ if (wsThresholdSlider) {
 	wsThresholdSlider.addEventListener('input', (event) => {
 		if (wsThresholdVal) wsThresholdVal.textContent = event.target.value;
 		updateRangeFill(event.target);
+	});
+}
+
+let adaptiveCDebounceTimer = null;
+if (wsAdaptiveCSlider) {
+	wsAdaptiveCSlider.addEventListener('input', (event) => {
+		const val = event.target.value;
+		if (wsAdaptiveCVal) wsAdaptiveCVal.textContent = val;
+		updateRangeFill(event.target);
+
+		// Nếu đang ở chế độ bản đồ nhiệt và đã có dữ liệu ảnh, cập nhật trực tiếp heatmap sau 220ms
+		if (state.currentChartType === 'heatmap' && (state.particleFile || state.heatmapData)) {
+			clearTimeout(adaptiveCDebounceTimer);
+			adaptiveCDebounceTimer = setTimeout(() => {
+				fetchAdaptiveHeatmap(val);
+			}, 220);
+		}
 	});
 }
 

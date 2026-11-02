@@ -457,7 +457,8 @@ def _to_grayscale(img_bgr: np.ndarray) -> np.ndarray:
 def _binarize(
     gray: np.ndarray,
     method: str,
-    manual_threshold: int
+    manual_threshold: int,
+    adaptive_c: float = 2.0,
 ) -> np.ndarray:
     """
     Chuyển ảnh xám (grayscale) thành ảnh nhị phân chuẩn Watershed:
@@ -480,6 +481,7 @@ def _binarize(
         gray            : Ảnh xám 8-bit (H×W).
         method          : 'otsu' | 'adaptive' | 'triangle' | 'manual'
         manual_threshold: Giá trị ngưỡng (1–254), chỉ dùng khi method='manual'.
+        adaptive_c      : Hằng số C trừ bớt giá trị trung bình Gauss (-10 đến 10, mặc định 2).
 
     Trả về:
         binary: Ảnh nhị phân (0/255), VẬT THỂ = TRẮNG, NỀN = ĐEN.
@@ -496,11 +498,12 @@ def _binarize(
         )
     elif method == "adaptive":
         # Adaptive Gaussian: xử lý ảnh có chiếu sáng không đồng đều
-        # Mỗi vùng nhỏ tự tính ngưỡng riêng → tốt cho tiêu bản không đồng nhất
+        # Mỗi vùng nhỏ tự tính ngưỡng riêng: T(x,y) = mean(11x11) - C
+        c_val = float(np.clip(adaptive_c if adaptive_c is not None else 2.0, -10.0, 10.0))
         binary = cv2.adaptiveThreshold(
             blurred, 255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV, 11, 2
+            cv2.THRESH_BINARY_INV, 11, c_val
         )
     elif method == "triangle":
         # Triangle: tốt cho ảnh có histogram lệch (skewed)
@@ -1456,6 +1459,7 @@ def _segment_particles(
     threshold: int = 128,
     distance_factor: float = 0.45,
     min_area: int = 20,
+    adaptive_c: float = 2.0,
 ):
     """
     Chạy pipeline: Grayscale → Binarize → Opening → Distance Transform
@@ -1479,9 +1483,10 @@ def _segment_particles(
     threshold = int(np.clip(threshold, 1, 254))
     distance_factor = float(np.clip(distance_factor, 0.05, 0.95))
     min_area = max(1, int(min_area))
+    adaptive_c = float(np.clip(adaptive_c if adaptive_c is not None else 2.0, -10.0, 10.0))
 
     gray = _to_grayscale(img_bgr)
-    binary = _binarize(gray, method=method, manual_threshold=threshold)
+    binary = _binarize(gray, method=method, manual_threshold=threshold, adaptive_c=adaptive_c)
     cleaned = _morphological_clean(binary)
 
     dist_map, sure_fg, _sure_bg, unknown = _distance_transform(
@@ -1508,9 +1513,11 @@ def _analyze_particle_image(
     show_centroid: bool,
     show_id: bool,
     color_map: bool,
+    adaptive_c: float = 2.0,
 ) -> dict:
     """Chạy toàn bộ pipeline 5A và trả về dict sẵn sàng cho JSONResponse."""
     started_at = time.perf_counter()
+    adaptive_c = float(np.clip(adaptive_c if adaptive_c is not None else 2.0, -10.0, 10.0))
 
     # 5-I — Đọc & decode ảnh (giới hạn 1600px để phản hồi ổn định)
     img_bgr = _decode_image_bytes(image_bytes, max_dim=1600)
@@ -1523,6 +1530,7 @@ def _analyze_particle_image(
         threshold=threshold,
         distance_factor=distance_factor,
         min_area=min_area,
+        adaptive_c=adaptive_c,
     )
 
     # 5-VI — Vẽ viền/tâm/#ID + bản đồ khoảng cách
@@ -1571,19 +1579,16 @@ def _analyze_particle_image(
         for p in particles
     ]
 
-    # 5-IX — Tính toán tất cả các ngưỡng (Otsu, Triangle, Adaptive Gaussian, Manual)
+    # 5-IX — Tính toán tất cả các ngưỡng (Otsu, Triangle, Manual)
     gray = _to_grayscale(img_bgr)
     blurred_for_thresh = cv2.GaussianBlur(gray, (5, 5), sigmaX=1)
     otsu_calc_val, _ = cv2.threshold(blurred_for_thresh, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     tri_calc_val, _ = cv2.threshold(blurred_for_thresh, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_TRIANGLE)
-    local_means = cv2.GaussianBlur(blurred_for_thresh, (11, 11), sigmaX=0)
-    adaptive_mean = round(float(np.mean(local_means) - 2), 1)
 
     thresholds_dict = {
         "selected_method": (method or "otsu").strip().lower(),
         "otsu": int(round(otsu_calc_val)),
         "triangle": int(round(tri_calc_val)),
-        "adaptive": float(np.clip(adaptive_mean, 0, 255)),
         "manual": int(np.clip(threshold, 1, 254)),
     }
 
@@ -1592,9 +1597,22 @@ def _analyze_particle_image(
     last_particle_gray_data["fg_mask"] = fg_mask
     last_particle_gray_data["thresholds"] = thresholds_dict
 
-    histogram_b64 = _generate_grayscale_histogram(
-        gray, thresholds=thresholds_dict, mode="all", fg_mask=fg_mask
-    )
+    # Tạo bản đồ nhiệt Adaptive Gaussian với hằng số C
+    heatmap_data = _generate_adaptive_heatmap(gray, block_size=11, c=adaptive_c)
+    last_particle_gray_data["heatmap_data"] = heatmap_data
+    last_particle_gray_data["adaptive_c"] = adaptive_c
+
+    # Biểu đồ phân tích tương ứng theo phương pháp
+    selected_method_lower = (method or "otsu").strip().lower()
+    if selected_method_lower == "adaptive":
+        chart_b64 = heatmap_data["heatmap_b64"]
+        chart_type = "heatmap"
+    else:
+        chart_b64 = _generate_grayscale_histogram(
+            gray, thresholds=thresholds_dict, mode="all", fg_mask=fg_mask
+        )
+        chart_type = "histogram"
+
     gray_stats = {
         "total_pixels": int(gray.size),
         "mean": round(float(np.mean(gray)), 1),
@@ -1615,7 +1633,10 @@ def _analyze_particle_image(
         "total_area_px": total_area,
         "result_image_b64": result_b64,
         "dist_image_b64": dist_b64,
-        "histogram_b64": histogram_b64,
+        "histogram_b64": chart_b64,
+        "chart_type": chart_type,
+        "heatmap_b64": heatmap_data["heatmap_b64"],
+        "heatmap_stats": heatmap_data["stats"],
         "gray_stats": gray_stats,
         "particles": particles_json,
         "image_width": int(img_bgr.shape[1]),
@@ -1625,6 +1646,87 @@ def _analyze_particle_image(
         "threshold": int(np.clip(threshold, 1, 254)),
         "distance_factor": round(float(np.clip(distance_factor, 0.05, 0.95)), 2),
         "min_area": max(1, int(min_area)),
+        "adaptive_c": adaptive_c,
+    }
+
+
+
+# ---------------------------------------------------------------------------
+# HÀM TIỆN ÍCH 5K: VẼ BẢN ĐỒ NHIỆT (HEATMAP) NGƯỠNG CỤC BỘ T(x, y) ADAPTIVE GAUSSIAN
+# ---------------------------------------------------------------------------
+def _generate_adaptive_heatmap(
+    gray: np.ndarray,
+    block_size: int = 11,
+    c: int = 2,
+) -> dict:
+    """
+    Tạo bản đồ nhiệt (Heatmap) thể hiện ma trận ngưỡng cục bộ T(x, y)
+    trong thuật toán Adaptive Gaussian Thresholding bằng Matplotlib:
+        T(x, y) = Gaussian_mean(x, y, block_size) - C
+    
+    Vùng màu nóng (Đỏ/Vàng): Ngưỡng cao tại vùng sáng mạnh/chói.
+    Vùng màu lạnh (Xanh lam/Xanh lục): Ngưỡng thấp tại vùng bóng tối/thiếu sáng.
+    """
+    if gray is None or gray.size == 0:
+        return {"heatmap_b64": "", "stats": {}}
+
+    blurred = cv2.GaussianBlur(gray, (5, 5), sigmaX=1)
+    local_means = cv2.GaussianBlur(blurred, (block_size, block_size), sigmaX=0)
+    t_map = local_means.astype(np.float32) - float(c)
+    t_map_clipped = np.clip(t_map, 0, 255)
+
+    t_min = round(float(np.min(t_map_clipped)), 1)
+    t_max = round(float(np.max(t_map_clipped)), 1)
+    t_mean = round(float(np.mean(t_map_clipped)), 1)
+    t_median = round(float(np.median(t_map_clipped)), 1)
+    t_std = round(float(np.std(t_map_clipped)), 1)
+
+    heatmap_stats = {
+        "mean": t_mean,
+        "median": t_median,
+        "std": t_std,
+        "min": t_min,
+        "max": t_max,
+        "block_size": block_size,
+        "c": c,
+        "width": int(gray.shape[1]),
+        "height": int(gray.shape[0]),
+    }
+
+    fig, ax = plt.subplots(figsize=(9.6, 4.0), dpi=110)
+    fig.patch.set_facecolor("#ffffff")
+    ax.set_facecolor("#0f172a")
+
+    # Bản đồ nhiệt với colormap 'jet' (Xanh lam/lục cho ngưỡng thấp -> Vàng/đỏ cho ngưỡng cao)
+    im = ax.imshow(t_map_clipped, cmap="jet", vmin=0, vmax=255, aspect="auto")
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.03)
+    cbar.set_label("Mức ngưỡng cục bộ T(x, y) [0: Lạnh/Tối → 255: Nóng/Sáng]", fontsize=8.5, fontweight="bold", color="#334155")
+    cbar.ax.tick_params(labelsize=8)
+
+    ax.set_title(
+        f"Bản đồ nhiệt ma trận ngưỡng cục bộ T(x, y) — Adaptive Gaussian (TB: {t_mean} | Dải: [{t_min} – {t_max}])",
+        fontsize=10.5,
+        fontweight="bold",
+        color="#0f172a",
+        pad=9,
+    )
+    ax.set_xlabel("Tọa độ X (pixel)", fontsize=8.5, fontweight="bold", color="#334155")
+    ax.set_ylabel("Tọa độ Y (pixel)", fontsize=8.5, fontweight="bold", color="#334155")
+    ax.tick_params(labelsize=8)
+
+    for spine in ax.spines.values():
+        spine.set_color("#cbd5e1")
+
+    plt.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+    heatmap_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    return {
+        "heatmap_b64": heatmap_b64,
+        "stats": heatmap_stats,
     }
 
 
@@ -1639,7 +1741,7 @@ def _generate_grayscale_histogram(
 ) -> str:
     """
     Vẽ biểu đồ phổ mức xám pixel và đối chiếu các ngưỡng phân đoạn:
-    Otsu, Triangle, Adaptive Gaussian & Manual bằng Matplotlib.
+    Otsu, Triangle & Manual bằng Matplotlib.
     
     Hỗ trợ các chế độ mode:
       - 'all'        : Phổ mức xám toàn bộ pixel của ảnh (0 - 255)
@@ -1704,7 +1806,7 @@ def _generate_grayscale_histogram(
         ax.set_title("Phổ phân bố mức xám & Đối chiếu các ngưỡng phân đoạn ảnh", fontsize=10.5, fontweight="bold", color="#0f172a", pad=9)
 
     # -----------------------------------------------------------------------
-    # ĐỐI CHIẾU CÁC NGƯỠNG PHÂN ĐOẠN (Otsu, Triangle, Adaptive Gaussian, Manual)
+    # ĐỐI CHIẾU CÁC NGƯỠNG PHÂN ĐOẠN (Otsu, Triangle, Manual)
     # -----------------------------------------------------------------------
     # 1. Ngưỡng Otsu
     otsu_val = thresholds.get("otsu")
@@ -1730,19 +1832,7 @@ def _generate_grayscale_histogram(
             alpha=0.95
         )
 
-    # 3. Ngưỡng Adaptive Gaussian (Mean)
-    adapt_val = thresholds.get("adaptive")
-    if adapt_val is not None and 0 < adapt_val < 255:
-        is_sel = selected_method == "adaptive"
-        ax.axvline(
-            adapt_val, color="#059669",
-            linestyle="-" if is_sel else ":",
-            linewidth=2.0 if is_sel else 1.4,
-            label=f"Adaptive TB: {adapt_val}" + (" [Đang dùng]" if is_sel else ""),
-            alpha=0.95
-        )
-
-    # 4. Ngưỡng Manual
+    # 3. Ngưỡng Manual
     manual_val = thresholds.get("manual")
     if manual_val is not None and 0 < manual_val < 255:
         is_sel = selected_method == "manual"
@@ -1923,6 +2013,7 @@ def _build_particle_csv(
     threshold: int,
     distance_factor: float,
     min_area: int,
+    adaptive_c: float = 2.0,
 ) -> bytes:
     """Chạy cùng pipeline 5A rồi đóng gói bảng đo lường thành CSV UTF-8."""
     img_bgr = _decode_image_bytes(image_bytes, max_dim=1600)
@@ -1932,6 +2023,7 @@ def _build_particle_csv(
         threshold=threshold,
         distance_factor=distance_factor,
         min_area=min_area,
+        adaptive_c=adaptive_c,
     )
 
     output_csv = io.StringIO()
@@ -1965,6 +2057,7 @@ async def particle_count(
     show_centroid: bool = Form(True),
     show_id: bool = Form(True),
     color_map: bool = Form(False),
+    adaptive_c: float = Form(2.0),
 ):
     """
     API phân tích đếm hạt / tế bào theo quy trình Watershed + Distance Transform.
@@ -2017,6 +2110,7 @@ async def particle_count(
             show_centroid,
             show_id,
             color_map,
+            adaptive_c,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2034,6 +2128,7 @@ async def particle_export_csv(
     threshold: int = Form(128),
     distance_factor: float = Form(0.45),
     min_area: int = Form(20),
+    adaptive_c: float = Form(2.0),
 ):
     """
     Chạy lại toàn bộ quy trình phân tích rồi xuất bảng số liệu dạng CSV.
@@ -2054,6 +2149,7 @@ async def particle_export_csv(
             threshold,
             distance_factor,
             min_area,
+            adaptive_c,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2113,6 +2209,54 @@ async def particle_histogram(request: Request):
         "histogram_b64": histogram_b64,
         "mode": mode,
         "gray_stats": gray_stats,
+    })
+
+
+
+# ---------------------------------------------------------------------------
+# ROUTE 5D: API BẢN ĐỒ NHIỆT ADAPTIVE GAUSSIAN T(x, y) BẰNG MATPLOTLIB
+# ---------------------------------------------------------------------------
+@app.get("/api/particle-adaptive-heatmap")
+@app.post("/api/particle-adaptive-heatmap")
+async def particle_adaptive_heatmap(request: Request):
+    """
+    Trả về ảnh bản đồ nhiệt (Heatmap) thể hiện phân bố ngưỡng cục bộ T(x, y)
+    cho thuật toán Adaptive Gaussian Thresholding với hằng số bù ngưỡng C.
+    """
+    gray = last_particle_gray_data.get("gray")
+    if gray is None or gray.size == 0:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": "Chưa có dữ liệu ảnh để tạo bản đồ nhiệt."},
+        )
+
+    # Đọc hằng số C từ request nếu có, hoặc dùng giá trị đã lưu
+    c_val = 2.0
+    try:
+        if request.method == "POST":
+            body = await request.json()
+            if "adaptive_c" in body:
+                c_val = float(body["adaptive_c"])
+            else:
+                c_val = float(last_particle_gray_data.get("adaptive_c", 2.0))
+        elif "adaptive_c" in request.query_params:
+            c_val = float(request.query_params["adaptive_c"])
+        else:
+            c_val = float(last_particle_gray_data.get("adaptive_c", 2.0))
+    except Exception:
+        c_val = float(last_particle_gray_data.get("adaptive_c", 2.0))
+
+    c_val = float(np.clip(c_val, -10.0, 10.0))
+
+    heatmap_data = await run_in_threadpool(_generate_adaptive_heatmap, gray, 11, c_val)
+    last_particle_gray_data["heatmap_data"] = heatmap_data
+    last_particle_gray_data["adaptive_c"] = c_val
+
+    return JSONResponse(content={
+        "status": "success",
+        "chart_type": "heatmap",
+        "heatmap_b64": heatmap_data["heatmap_b64"],
+        "stats": heatmap_data["stats"],
     })
 
 
